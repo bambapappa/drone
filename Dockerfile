@@ -12,8 +12,9 @@ RUN pip install --no-cache-dir uv
 # CPU-only torch first (much smaller than the default CUDA build)
 RUN uv pip install --system --no-cache torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
+# Dependencies only at this layer (app/ is copied later for better caching)
 COPY pyproject.toml .
-RUN uv pip install --system --no-cache .
+RUN uv pip install --system --no-cache -r pyproject.toml
 
 # Bake the detection model into the image so the container runs offline.
 ARG MODEL=yolo11n.pt

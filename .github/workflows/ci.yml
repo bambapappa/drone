@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main, dev, "claude/**"]
   pull_request:
     branches: [main]
 
@@ -16,9 +16,15 @@ jobs:
           python-version: "3.12"
       - name: Install uv
         run: pip install uv
+      - name: Install CPU torch (smaller than default CUDA build)
+        run: uv pip install --system torch torchvision --index-url https://download.pytorch.org/whl/cpu
       - name: Install dependencies
-        run: uv pip install --system ".[dev]"
+        run: |
+          uv pip install --system -r pyproject.toml
+          uv pip install --system ruff pytest pytest-asyncio
       - name: Lint
-        run: ruff check app/ tests/
+        run: |
+          ruff check app/ tests/ scripts/
+          ruff format --check app/ tests/ scripts/
       - name: Test
         run: pytest tests/ -v

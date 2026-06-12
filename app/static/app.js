@@ -35,6 +35,7 @@ let lastPacketAt = 0;
 
 let ws = null;
 let retryMs = 500;
+let seq = 0; // decode-order guard: an older frame must never replace a newer
 
 function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
@@ -42,6 +43,7 @@ function connect() {
   ws.binaryType = "arraybuffer";
   ws.onopen = () => { retryMs = 500; };
   ws.onmessage = async (ev) => {
+    const mySeq = ++seq;
     const buf = ev.data;
     const view = new DataView(buf);
     const metaLen = view.getUint32(0);
@@ -49,8 +51,9 @@ function connect() {
     const jpeg = new Blob([new Uint8Array(buf, 4 + metaLen)], { type: "image/jpeg" });
     try {
       const bitmap = await createImageBitmap(jpeg);
+      if (latest && latest.seq > mySeq) { bitmap.close(); return; }
       if (latest && latest.bitmap) latest.bitmap.close();
-      latest = { meta, bitmap };
+      latest = { meta, bitmap, seq: mySeq };
       lastPacketAt = performance.now();
     } catch (_) { /* skip broken frame */ }
   };
@@ -299,9 +302,15 @@ document.getElementById("btn-clear-danger").onclick = () =>
 
 canvas.addEventListener("click", (ev) => {
   if (!dangerArmed) return;
+  // object-fit: contain letterboxes the content when max-height clips the
+  // element — map the click into the actual video rectangle.
   const r = canvas.getBoundingClientRect();
-  const x = (ev.clientX - r.left) / r.width;
-  const y = (ev.clientY - r.top) / r.height;
+  const scale = Math.min(r.width / canvas.width, r.height / canvas.height);
+  const cw = canvas.width * scale, ch = canvas.height * scale;
+  const ox = r.left + (r.width - cw) / 2, oy = r.top + (r.height - ch) / 2;
+  const x = (ev.clientX - ox) / cw;
+  const y = (ev.clientY - oy) / ch;
+  if (x < 0 || x > 1 || y < 0 || y > 1) return; // tapped the letterbox bars
   fetch("/api/danger", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

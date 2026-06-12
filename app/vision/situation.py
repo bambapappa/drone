@@ -103,10 +103,20 @@ class SituationAnalyzer:
         self._base_target: tuple[float, float] | None = None
 
     def update(
-        self, frame_bgr: np.ndarray, t: float, danger_norm: tuple[float, float] | None
+        self,
+        frame_bgr: np.ndarray,
+        t: float,
+        danger_norm: tuple[float, float] | None,
+        ignore: list[tuple[float, float, float, float]] | None = None,
     ) -> SituationState:
         h, w = frame_bgr.shape[:2]
         small = cv2.resize(frame_bgr, (WORK_W, max(2, int(h * WORK_W / w))))
+        if ignore:
+            # Black out excluded regions (e.g. IR picture-in-picture): black is
+            # outside both the fire and smoke masks' value ranges.
+            sh, sw = small.shape[:2]
+            for rx, ry, rw, rh in ignore:
+                small[int(ry * sh) : int((ry + rh) * sh), int(rx * sw) : int((rx + rw) * sw)] = 0
         gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
 
         fm = fire_mask(small)

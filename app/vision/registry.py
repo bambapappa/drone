@@ -46,6 +46,9 @@ class Person:
     stab_pos: tuple[float, float] = (0.0, 0.0)
     track_ids: set[int] = field(default_factory=set)
 
+    def confirmed(self, min_life_s: float) -> bool:
+        return (self.last_seen - self.first_seen) >= min_life_s
+
 
 class PersonRegistry:
     def __init__(
@@ -54,22 +57,29 @@ class PersonRegistry:
         max_gap_s: float = 60.0,
         max_dist_frac: float = 0.45,
         hist_ema: float = 0.10,
+        confirm_s: float = 2.0,
     ):
         self.sim_thresh = sim_thresh
         self.max_gap_s = max_gap_s
         self.max_dist_frac = max_dist_frac
         self.hist_ema = hist_ema
+        # Tiny low-confidence detections churn tracker IDs; a person only
+        # counts as unique after existing this long (kills count inflation
+        # on real footage without hiding boxes).
+        self.confirm_s = confirm_s
         self.persons: dict[int, Person] = {}
         self._track_to_pid: dict[int, int] = {}
         self._active_tracks: set[int] = set()
+        self._resolved_pids: set[int] = set()
         self._next_pid = 1
 
     @property
     def unique_total(self) -> int:
-        return len(self.persons)
+        return sum(1 for p in self.persons.values() if p.confirmed(self.confirm_s))
 
     def begin_frame(self) -> None:
         self._active_tracks = set()
+        self._resolved_pids = set()
 
     def resolve(
         self,
@@ -82,6 +92,12 @@ class PersonRegistry:
         """Map a tracker ID to a stable person ID, re-identifying if possible."""
         self._active_tracks.add(track_id)
         pid = self._track_to_pid.get(track_id)
+        if pid is not None and pid in self._resolved_pids:
+            # Conflict: another live track already claimed this person in this
+            # frame (tracker revived a stale ID after re-ID). The stale mapping
+            # loses; re-resolve this track as new/other person.
+            del self._track_to_pid[track_id]
+            pid = None
         if pid is None:
             pid = self._match_lost(track_id, t, hist, stab_pos, frame_diag)
             if pid is None:
@@ -90,6 +106,7 @@ class PersonRegistry:
                 self.persons[pid] = Person(pid=pid, first_seen=t)
             self._track_to_pid[track_id] = pid
             self.persons[pid].track_ids.add(track_id)
+        self._resolved_pids.add(pid)
 
         p = self.persons[pid]
         p.last_seen = t
@@ -116,6 +133,7 @@ class PersonRegistry:
             return None
         # Only people whose tracks are all gone are candidates for re-entry.
         active_pids = {self._track_to_pid[tid] for tid in self._active_tracks if tid in self._track_to_pid}
+        active_pids |= self._resolved_pids
         best_pid, best_sim = None, self.sim_thresh
         for p in self.persons.values():
             if p.pid in active_pids or p.hist is None:

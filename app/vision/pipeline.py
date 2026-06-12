@@ -69,6 +69,7 @@ class Pipeline:
         self.source = VideoSource(source, loop=cfg.loop, max_fps=cfg.max_fps)
         self.source_name = source
         self.roi = cfg.roi_tuple()  # crop applied to every frame before analysis
+        self.ignore = cfg.ignore_list()  # regions excluded from analysis (PiP IR insets)
         self.frame_w = 0  # dimensions of the (possibly cropped) analyzed frame
         self.frame_h = 0
 
@@ -118,7 +119,6 @@ class Pipeline:
         self.detect_fps = 0.0
         self._threat_last_t = 0.0
         self._last_threats: list[dict] = []
-        self._visible_humans = 0
 
     # ---------- public control ----------
 
@@ -303,13 +303,18 @@ class Pipeline:
             if d["trail_pt"] is not None:
                 tr.trail.append(d["trail_pt"])
 
-        self._visible_humans = res["visible"]
         if res["threats"]:
             # Keep the last seen threats during the hold window so the alarm
             # doesn't flicker with single missed detections.
             self._last_threats = res["threats"]
             self._threat_last_t = t
         self._irrational_pids |= res["irrational_pids"]
+
+    def _in_ignore(self, nx: float, ny: float) -> bool:
+        for rx, ry, rw, rh in self.ignore:
+            if rx <= nx <= rx + rw and ry <= ny <= ry + rh:
+                return True
+        return False
 
     def _apply_roi(self, frame: np.ndarray) -> np.ndarray:
         """Crop to the configured analysis region (e.g. the visual half of
@@ -339,8 +344,9 @@ class Pipeline:
     def _track_grace(self) -> float:
         """How long a track may stay on screen without a fresh detection:
         a few detection periods (bridges single misses), capped so ghost
-        boxes never linger at frame edges."""
-        return min(max(3.5 / max(self.detect_fps, 4.0), 0.35), 1.0)
+        boxes never linger. The cap widens when detection is slow (large
+        models on weak CPUs) — flow advection carries the boxes meanwhile."""
+        return min(max(3.5 / max(self.detect_fps, 1.0), 0.35), 2.5)
 
     def _prune_tracks(self, t: float) -> None:
         grace = self._track_grace()
@@ -412,6 +418,8 @@ class Pipeline:
         for d in detections:
             x0, y0, x1, y1 = d.xyxy
             cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+            if self._in_ignore(cx / w, cy / h):
+                continue
             stab = (cx - float(offset[0]), cy - float(offset[1]))
             entry = {
                 "track_id": d.track_id,
@@ -449,7 +457,7 @@ class Pipeline:
         ds = self.danger_screen_norm()
         if ds is not None:
             danger_norm = (ds[0], ds[1])
-        self.situation.update(job.frame, job.t, danger_norm)
+        self.situation.update(job.frame, job.t, danger_norm, ignore=self.ignore)
 
         return {
             "detections": det_out,
@@ -536,7 +544,9 @@ class Pipeline:
             "danger": {"pos": [danger[0], danger[1]], "off": danger[2]} if danger else None,
             "stats": {
                 "unique": self.registry.unique_total,
-                "visible": self._visible_humans,
+                # What the viewer actually sees right now (display tracks),
+                # not the last raw detection count.
+                "visible": len(persons),
                 "irr_now": irr_now,
                 "irr_total": len(self._irrational_pids),
                 "threat": threat_active,

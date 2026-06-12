@@ -14,14 +14,12 @@
       <div class="stat" id="st-visible" title="Synliga nu"><b>0</b><small>synliga</small></div>
       <div class="stat" id="st-unique" title="Unika totalt"><b>0</b><small>totalt</small></div>
       <div class="stat warn" id="st-irr" title="Irrationellt beteende"><b>0</b><small>irrat.</small></div>
-      <div class="stat danger hidden" id="st-threat" title="Hot"><b>HOT</b><small>aktivt</small></div>
       <div class="stat dim" id="st-fps"><b>–</b><small>fps</small></div>
     </div>
   </header>
 
   <main>
     <div id="stage">
-      <div id="threat-banner" class="hidden">⚠ HOT UPPTÄCKT</div>
       <canvas id="view"></canvas>
       <div id="overlay-msg">Ansluter …</div>
       <div id="danger-hint" class="hidden">Tryck i bilden för att markera faran</div>
@@ -32,7 +30,6 @@
       <button class="chip on" data-layer="ids">ID</button>
       <button class="chip" data-layer="trails">Spår</button>
       <button class="chip on" data-layer="status">Beteende</button>
-      <button class="chip on" data-layer="threats">Hot</button>
       <button class="chip on" data-layer="hazards">Miljö</button>
       <button class="chip on" data-layer="base">Bas</button>
       <button class="chip" id="btn-danger">🎯 Markera fara</button>
@@ -44,10 +41,6 @@
       <div class="card">
         <h3>Lägesbild</h3>
         <ul id="situation-list"><li class="dim">Ingen lägesinfo ännu.</li></ul>
-      </div>
-      <div class="card">
-        <h3>Hot</h3>
-        <ul id="threat-list"><li class="dim">Inga hot upptäckta.</li></ul>
       </div>
       <div class="card">
         <h3>Källa</h3>

@@ -69,10 +69,7 @@ def main() -> int:
         urls = (
             [args.url]
             if args.url
-            else [
-                f"https://huggingface.co/{HF_REPOS[args.size]}/resolve/main/{f}"
-                for f in CANDIDATE_FILES
-            ]
+            else [f"https://huggingface.co/{HF_REPOS[args.size]}/resolve/main/{f}" for f in CANDIDATE_FILES]
         )
         ok = False
         for url in urls:
@@ -93,7 +90,6 @@ def main() -> int:
     print("Sätt i .env:")
     print(f"  MODEL={dest}")
     print("  HUMAN_CLASSES=pedestrian,people")
-    print("  THREAT_CLASSES=        # VisDrone saknar vapenklasser — hotlagret blir tyst")
 
     if args.verify:
         from ultralytics import YOLO

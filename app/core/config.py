@@ -18,6 +18,11 @@ class Settings(BaseSettings):
     # For split-screen IR/visual footage: select the visual half so people
     # aren't double-counted. Empty = full frame.
     analysis_roi: str = ""
+    # Regions to EXCLUDE from analysis (";"-separated "x,y,w,h", normalized,
+    # in the analyzed/cropped frame's coordinates). For picture-in-picture IR
+    # insets: detections and smoke/fire analysis inside are discarded while
+    # the video still shows the full frame. Ex: IGNORE_REGIONS=0.66,0,0.34,0.44
+    ignore_regions: str = ""
 
     # --- Detection model ---
     model: str = "yolo11n.pt"  # any Ultralytics .pt; class names are introspected
@@ -27,8 +32,9 @@ class Settings(BaseSettings):
     iou: float = 0.50
     # Class names treated as humans (covers COCO and VisDrone-style models)
     human_classes: str = "person,pedestrian,people"
-    # Class names flagged as threats (COCO has knife; swap model for weapons etc.)
-    threat_classes: str = "knife"
+    # Threat flagging is deferred past PoC 1 (see DECISIONS B7): plumbing kept,
+    # default off. Set e.g. "knife" with a COCO model to re-enable.
+    threat_classes: str = ""
 
     # --- Output stream ---
     max_fps: float = 24.0
@@ -71,26 +77,44 @@ class Settings(BaseSettings):
     def threat_class_set(self) -> set[str]:
         return {c.strip().lower() for c in self.threat_classes.split(",") if c.strip()}
 
+    @staticmethod
+    def _parse_rect(v: str, name: str, min_wh: float = 0.05) -> tuple[float, float, float, float]:
+        parts = [float(p) for p in v.split(",")]
+        if len(parts) != 4:
+            raise ValueError(f"{name} ska vara 'x,y,w,h' (normaliserat 0..1)")
+        x, y, w, h = parts
+        if not (0 <= x < 1 and 0 <= y < 1 and min_wh <= w <= 1 and min_wh <= h <= 1):
+            raise ValueError(f"{name} utanför giltigt intervall (0..1, w/h ≥ {min_wh})")
+        if x + w > 1.0001 or y + h > 1.0001:
+            raise ValueError(f"{name} sticker utanför bilden (x+w respektive y+h ≤ 1)")
+        return x, y, w, h
+
     @field_validator("analysis_roi")
     @classmethod
     def _validate_roi(cls, v: str) -> str:
-        if not v.strip():
-            return ""
-        parts = [float(p) for p in v.split(",")]
-        if len(parts) != 4:
-            raise ValueError("ANALYSIS_ROI ska vara 'x,y,w,h' (normaliserat 0..1)")
-        x, y, w, h = parts
-        if not (0 <= x < 1 and 0 <= y < 1 and 0.05 <= w <= 1 and 0.05 <= h <= 1):
-            raise ValueError("ANALYSIS_ROI utanför giltigt intervall (0..1, w/h ≥ 0.05)")
-        if x + w > 1.0001 or y + h > 1.0001:
-            raise ValueError("ANALYSIS_ROI sticker utanför bilden (x+w respektive y+h ≤ 1)")
+        if v.strip():
+            cls._parse_rect(v, "ANALYSIS_ROI")
+        return v
+
+    @field_validator("ignore_regions")
+    @classmethod
+    def _validate_ignore(cls, v: str) -> str:
+        for part in v.split(";"):
+            if part.strip():
+                cls._parse_rect(part, "IGNORE_REGIONS", min_wh=0.01)
         return v
 
     def roi_tuple(self) -> tuple[float, float, float, float] | None:
         if not self.analysis_roi.strip():
             return None
-        x, y, w, h = (float(p) for p in self.analysis_roi.split(","))
-        return x, y, w, h
+        return self._parse_rect(self.analysis_roi, "ANALYSIS_ROI")
+
+    def ignore_list(self) -> list[tuple[float, float, float, float]]:
+        return [
+            self._parse_rect(p, "IGNORE_REGIONS", min_wh=0.01)
+            for p in self.ignore_regions.split(";")
+            if p.strip()
+        ]
 
 
 settings = Settings()

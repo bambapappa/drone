@@ -2,9 +2,11 @@
 
 Realtidsanalys av drönarvideo i webbläsaren: detekterar och följer människor,
 räknar unika personer, flaggar irrationellt beteende (stilla / rör sig mot
-fara), gör en enkel lägesbild (rök/eld, rökdrift, förslag på basplats) och
-larmar vid hot. Byggt för att fungera likadant på inspelad övningsfilm som på
-en riktig drönarström — samma kodväg, inga per-video-inställningar.
+fara) och gör en enkel lägesbild (rök/eld, rökdrift, förslag på basplats).
+Byggt för att fungera likadant på inspelad övningsfilm som på en riktig
+drönarström — samma kodväg, inga per-video-inställningar.
+*(Hotdetektion är utlyft ur PoC 1 och återkommer senare; rörledningen finns
+kvar bakom `THREAT_CLASSES`.)*
 
 Arkitektur och alla designbeslut: se **[DECISIONS.md](DECISIONS.md)**.
 
@@ -29,14 +31,14 @@ python scripts/make_demo_video.py        # skriver videos/demo.mp4
 
 ## GUI
 
-- **Statusrad:** synliga nu · unika totalt · irrationella · hotlarm · fps (video·analys).
-- **Lager (togglas per klient):** Boxar, ID, Spår, Beteende, Hot, Miljö (rök/eld), Bas.
+- **Statusrad:** synliga nu · unika totalt · irrationella · fps (video·analys).
+- **Lager (togglas per klient):** Boxar, ID, Spår, Beteende, Miljö (rök/eld), Bas.
 - **🎯 Markera fara:** tryck på knappen och sedan i bilden — personer som rör
   sig mot punkten flaggas orange (MOT FARA). Punkten följer kamerarörelsen.
 - **Panel:** lägesbild med motivering av basförslaget, hotlista, källval och
   uppladdning av film.
 - Färger: grön = OK, **röd = stilla/livlös** (LIGGER om posen indikerar det),
-  **orange = rör sig mot faran**, mörkröd = hotobjekt.
+  **orange = rör sig mot faran**.
 
 Anpassat för liten skärm (mobil för fältpersonal) och storbild (ledningscentral).
 Flera klienter kan titta samtidigt med olika lagerval; en långsam klient får
@@ -70,11 +72,17 @@ python scripts/fetch_visdrone.py          # hämtar vikter till models/ (kräver
 MODEL=models/visdrone-yolov8s.pt          # samma sökväg funkar nativt och i Docker
 ```
 
-`models/` monteras in i containern automatiskt. Obs: VisDrone saknar
-vapenklasser, så hotlagret blir tyst med den modellen (`THREAT_CLASSES`
-kräver en modell som har klasserna — rörledningen är klar för en
-specialmodell i PoC 2). Annan officiell modell bakas in med
-`docker compose build --build-arg MODEL=yolo11s.pt`.
+`models/` monteras in i containern automatiskt. Annan officiell modell bakas
+in med `docker compose build --build-arg MODEL=yolo11s.pt`.
+
+**Rekommenderad konfig för riktig drönarfilm** (uppmätt på insatsfilm, se
+DECISIONS B16 — COCO-modeller är nära blinda på små människor från höjd):
+
+```bash
+MODEL=models/visdrone-yolov8s.pt
+IMGSZ=1280        # 960 på svag CPU; 1280 ger ~2x fler fynd på hög höjd
+CONF=0.20         # recall före precision vid eftersök
+```
 
 ## Värmekamera / split-screen
 
@@ -119,6 +127,6 @@ allt material — utfallet på osedd film är förutsägbart.
 
 ## Begränsningar (PoC 1) och vägen framåt
 
-Medvetna avgränsningar — georeferens kräver drönartelemetri, hotmodellen är
-COCO-begränsad, rök/eld är heuristik, re-ID är apparensbaserad per session.
-Detaljer och PoC 2/MCP-tankar i [DECISIONS.md](DECISIONS.md).
+Medvetna avgränsningar — hotdetektion utlyft till senare fas, georeferens
+kräver drönartelemetri, rök/eld är heuristik, re-ID är apparensbaserad per
+session. Detaljer och PoC 2/MCP-tankar i [DECISIONS.md](DECISIONS.md).

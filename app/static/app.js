@@ -7,14 +7,12 @@
 const canvas = document.getElementById("view");
 const ctx = canvas.getContext("2d");
 const overlayMsg = document.getElementById("overlay-msg");
-const threatBanner = document.getElementById("threat-banner");
 const dangerHint = document.getElementById("danger-hint");
 
 const COLORS = {
   ok: "#2ecc71",
   still: "#ff4757",
   toward_danger: "#ffa502",
-  threat: "#ff3838",
   base: "#34c3ff",
   danger: "#ff4757",
   smoke: "#aab4be",
@@ -22,7 +20,7 @@ const COLORS = {
 };
 const STATUS_TEXT = { still: "STILLA", toward_danger: "MOT FARA" };
 
-const layers = { boxes: true, ids: true, trails: false, status: true, threats: true, hazards: true, base: true };
+const layers = { boxes: true, ids: true, trails: false, status: true, hazards: true, base: true };
 try {
   Object.assign(layers, JSON.parse(localStorage.getItem("layers") || "{}"));
 } catch (_) {}
@@ -90,7 +88,6 @@ function draw() {
   if (layers.hazards) drawHazards(meta, W, H, lw);
   if (layers.trails) for (const p of meta.persons) drawTrail(p, W, H, lw);
   if (layers.boxes) for (const p of meta.persons) drawPerson(p, W, H, lw);
-  if (layers.threats) for (const t of meta.threats) drawThreat(t, W, H, lw);
   if (meta.danger) drawDanger(meta.danger, W, H, lw);
   if (layers.base && meta.base) drawBase(meta.base, W, H, lw);
 
@@ -141,20 +138,6 @@ function drawTrail(p, W, H, lw) {
     i === 0 ? ctx.moveTo(X, Y) : ctx.lineTo(X, Y);
   });
   ctx.stroke();
-}
-
-function drawThreat(t, W, H, lw) {
-  const [x, y, w, h] = t.box;
-  const X = x * W, Y = y * H;
-  ctx.lineWidth = lw * 2;
-  ctx.strokeStyle = COLORS.threat;
-  ctx.strokeRect(X, Y, w * W, h * H);
-  const label = `⚠ ${t.cls.toUpperCase()}`;
-  const th = parseInt(ctx.font, 10) + 6;
-  ctx.fillStyle = COLORS.threat;
-  ctx.fillRect(X - lw, Y - th, ctx.measureText(label).width + 10, th);
-  ctx.fillStyle = "#fff";
-  ctx.fillText(label, X + 4, Y - 3);
 }
 
 function drawDanger(d, W, H, lw) {
@@ -225,10 +208,8 @@ const elVisible = document.querySelector("#st-visible b");
 const elUnique = document.querySelector("#st-unique b");
 const elIrr = document.querySelector("#st-irr b");
 const elIrrBox = document.getElementById("st-irr");
-const elThreat = document.getElementById("st-threat");
 const elFps = document.querySelector("#st-fps b");
 const situationList = document.getElementById("situation-list");
-const threatList = document.getElementById("threat-list");
 const srcInfo = document.getElementById("src-info");
 
 let lastHud = 0;
@@ -244,13 +225,7 @@ function updateHud(meta) {
   elUnique.textContent = s.unique;
   elIrr.textContent = s.irr_now;
   elIrrBox.classList.toggle("active", s.irr_now > 0);
-  elThreat.classList.toggle("hidden", !s.threat);
   elFps.textContent = `${meta.fps}·${meta.det_fps}`;
-
-  threatBanner.classList.toggle("hidden", !s.threat);
-  if (s.threat && meta.threats.length) {
-    threatBanner.textContent = `⚠ HOT: ${[...new Set(meta.threats.map(t => t.cls.toUpperCase()))].join(", ")}`;
-  }
 
   const sit = [];
   if (meta.base) for (const r of meta.base.reasons) sit.push(`<li>${esc(r)}</li>`);
@@ -259,10 +234,6 @@ function updateHud(meta) {
   if (meta.danger) sit.push(`<li class="note">Faropunkt markerad${meta.danger.off ? " (utanför bild)" : ""}</li>`);
   if (s.irr_total > 0) sit.push(`<li>Irrationellt beteende hos ${s.irr_total} person(er) under passet</li>`);
   situationList.innerHTML = sit.length ? sit.join("") : '<li class="dim">Inget att rapportera.</li>';
-
-  threatList.innerHTML = meta.threats.length
-    ? meta.threats.map(t => `<li class="alert">${esc(t.cls)} (${Math.round(t.conf * 100)} %)</li>`).join("")
-    : '<li class="dim">Inga hot upptäckta.</li>';
 }
 
 function esc(s) {

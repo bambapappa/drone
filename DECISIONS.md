@@ -71,9 +71,9 @@ FastAPI ── WebSocket /ws/stream ──► webbklient (canvas)
 - **Val:** Eld = färgheuristik (mättade röd/orange-regioner), rök = lågmättade gråa regioner med rörelse; rökens driftriktning = medianflöde (Farnebäck, nedskalat) i rökmasken, EMA-utjämnad. Basplatsförslag = riktning **motvind** (motsatt rökdrift) om rök finns, annars bort från faropunkten; placeras mot bildkant med hysteres så markören inte vandrar. Motivering visas i klartext i GUI:t.
 - **Varför:** Ärlig, billig beräkning ur själva bilden. Tydligt skyltad som *heuristik/förslag* — beslutet är alltid räddningsledarens. **Begränsning:** allt är i bildkoordinater (ingen georeferens utan drönartelemetri — PoC 2).
 
-### B7. Hotdetektion: klassbaserad via samma YOLO-pass
-- **Val:** Detekterade objekt vars klassnamn finns i `THREAT_CLASSES` (default: `knife`) flaggas med röd box + larmbanner (debounce 2 s). Miljöhot (eld/rök) listas separat.
-- **Varför:** COCO saknar skjutvapen/farligt gods-skyltar; en specialmodell (eller öppen-vokabulär som YOLO-World) är PoC 2. Rörledningen (detektion → larm → GUI) är dock på plats och en hotmodell kan bytas in via `MODEL`/`THREAT_CLASSES` utan kodändring.
+### B7. Hotdetektion: UTLYFT ur PoC 1 (beslut 2026-06-12)
+- **Beslut:** Hotbilden lyfts ur PoC 1 på beställarens begäran — fokus läggs på persondetektering och följsamhet. Backend-rörledningen (klassbaserad flaggning via `THREAT_CLASSES`) behålls men är avstängd som standard (tom klasslista) och GUI-ytan (hotchip, larmbanner, hotlista) är borttagen.
+- **Återaktivering senare:** sätt `THREAT_CLASSES=knife` (COCO-modell) eller byt till specialmodell för vapen/farligt gods; GUI-lagret återinförs då. Öppen-vokabulär (YOLO-World) är fortsatt PoC 2-kandidat.
 
 ### B8. Leverans till klient: WebSocket med JPEG + metadata per bildruta
 - **Val:** Binärt WS-meddelande per bildruta: `[längd][meta-JSON][JPEG]`. Klienten ritar bilden på canvas och lagren (boxar, ID, spår, status, bas, rök, hot) ovanpå — **togglar är därmed rena klientval** och kräver ingen serveromrendering. Per-klient-kö med längd 1 (äldsta kastas) → en långsam mobil ger sig själv lägre fps men aldrig växande fördröjning.
@@ -111,6 +111,22 @@ FastAPI ── WebSocket /ws/stream ──► webbklient (canvas)
 - **Problem:** Demofilmer loopas; ompositioneringen är ett hårt scenklipp som teleporterar alla boxar och förgiftar kamerarörelseskattningen. Riktiga strömmar kan ha motsvarande glitchar (tappade bildrutor, I-frame-hopp).
 - **Val:** Loopomstart signaleras från källan; pipelinen rensar då visningsspår, tracker-tillstånd och beteendehistorik. Person-ID:n överlever ändå — registret återidentifierar på utseende. Kamerarörelseskattningen ignorerar dessutom orimligt stora skift (> 25 % av bildbredden per bildruta) som säkerhetsnät.
 
+### B16. Modellval och trösklar valda ur mätningar på riktig insatsfilm (2026-06-12)
+Två riktiga filmer (trafikolycka med IR-PiP; lägenhetsbrand med rök, 960×540): `scripts/eval_detection.py`, 24–40 provrutor/konfig, personer/ruta i medel + andel rutor med fynd:
+
+| Film | Modell | imgsz | conf | medel | rutor>0 |
+|---|---|---|---|---|---|
+| brand | yolo11n | 640/960 | 0.3 | 0,0–0,1 | 1–2/40 |
+| brand | visdrone-yolov8s | 960 | 0.3 | 2,1 | 15/40 |
+| brand | visdrone-yolov8s | 960 | **0.2** | 4,8 | 23/40 |
+| brand (tätt segment) | visdrone-yolov8s | **1280** | 0.2 | 11,5 | 30/30 |
+| trafik (snett, regn) | yolo11s | 960–1280 | 0.2 | 0,9–1,0 | 4–5/24 |
+| trafik (snett, regn) | visdrone-yolov8s | **1280** | 0.2 | 1,8 | 13/24 |
+
+- **Beslut:** VisDrone-yolov8s är bäst på båda filmtyperna (COCO-nano är i praktiken blind på hög höjd). Rekommenderad insatskonfig: `MODEL=models/visdrone-yolov8s.pt`, `IMGSZ=1280`, `CONF=0.20` (960 på svag CPU). Tracker-trösklarna sänkta (`track_high 0.30`, `new_track 0.35`) så lågkonfidenta småfynd blir spår — rätt avvägning för eftersök (hellre en buske för mycket än en missad människa).
+- **Följdproblem som fixades efter mätning på riktig film:** (1) tracker-återupplivning + re-ID kunde ge två boxar med samma person-ID — registret detekterar nu konflikten per bildruta; (2) ID-churn på småfynd blåste upp unika-räknaren — personer räknas nu som unika först efter ≥ 2 s existens; (3) spår-fristen vidgas när detekteringen är långsam (stora modeller). Resultat på brandklippet: dubbletter 29/481 → 0/481 paket, max boxhopp 0,014, unika 33→14 i tätt segment.
+- **Kända kvarvarande svagheter:** sneda vyer i regn/skugga missar fortfarande kluster (delvis fysikens fel — rörelseoskärpa på 10 px människor); rökheuristiken kan ge falskt utslag på våt skimrande asfalt. PoC 2: tiled inferens (SAHI-stil) för småfolk, tränad rök-segmentering.
+
 ## Verifiering (körs mot riktig pipeline, ej mockad)
 
 - `tests/` — 35 enhetstester för logikmodulerna (beteende, register, filter, lägesbild, API) utan ML-beroende.
@@ -128,3 +144,4 @@ FastAPI ── WebSocket /ws/stream ──► webbklient (canvas)
 - 2026-06-12: Boxutjämning omarbetad efter mätning (B3 uppdaterad): One Euro förkastad till förmån för flödesframmatning + EMA/slew. Scenklippshantering tillagd (B14). Integrationskontroll grön.
 - 2026-06-12: Kodgranskningsrunda (7 vinklar). Åtgärdat: JPEG-kodning hoppas över när inga klienter tittar (analysen fortsätter ackumulera), dött One Euro-filter borttaget, `VideoSource.frame_no` publik. Noterat för PoC 2 (medvetet ej åtgärdat nu): hothållning är global (ej per hottyp/plats), diskontinuitetshantering bör generaliseras bortom filloop (RTSP-glapp), GUI-rendering finns i två varianter (webbklient + snapshot-debugverktyg) som måste hållas i synk.
 - 2026-06-12: VisDrone-hämtskript + ANALYSIS_ROI för IR/split-screen (B15). ROI verifierad end-to-end (beskuren bildstorlek + faropunktskoordinater); full integrationskontroll grön utan ROI (boxhopp 0,042).
+- 2026-06-12: Hotbild utlyft ur PoC 1 (B7). IGNORE_REGIONS för IR-bild-i-bild. Modellutvärdering på två riktiga insatsfilmer → VisDrone@1280 conf 0.2 rekommenderas (B16); registerfixar (pid-dubbletter, unika-inflation) verifierade live: 0 dubbletter, max boxhopp 0,007–0,014 på riktig film.

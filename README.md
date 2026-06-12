@@ -59,19 +59,34 @@ beter sig exakt som mot en live-ström.
 
 Standard är `yolo11n.pt` (COCO). Vilken Ultralytics-modell som helst kan
 användas — klassnamnen introspekteras, så en VisDrone-tränad modell
-(`pedestrian`/`people`) fungerar direkt:
+(`pedestrian`/`people`) fungerar direkt.
+
+**VisDrone** (rekommenderas för riktig drönarfilm — tränad på små människor
+från hög höjd):
 
 ```bash
-# bygg med annan modell
-docker compose build --build-arg MODEL=yolo11s.pt
-
-# eller montera egna vikter och peka ut dem i .env
-MODEL=/models/visdrone.pt
-HUMAN_CLASSES=pedestrian,people
+python scripts/fetch_visdrone.py          # hämtar vikter till models/ (kräver internet)
+# sätt sedan i .env:
+MODEL=models/visdrone-yolov8s.pt          # samma sökväg funkar nativt och i Docker
 ```
 
-`THREAT_CLASSES` styr vilka klassnamn som larmas som hot (default `knife`;
-byt modell för vapen/farligt gods — rörledningen är klar).
+`models/` monteras in i containern automatiskt. Obs: VisDrone saknar
+vapenklasser, så hotlagret blir tyst med den modellen (`THREAT_CLASSES`
+kräver en modell som har klasserna — rörledningen är klar för en
+specialmodell i PoC 2). Annan officiell modell bakas in med
+`docker compose build --build-arg MODEL=yolo11s.pt`.
+
+## Värmekamera / split-screen
+
+För film där IR- och vanlig bild visas sida vid sida (eller bild-i-bild):
+beskär analysen till den ena vyn så personer inte dubbelräknas:
+
+```bash
+ANALYSIS_ROI=0,0,0.5,1      # vänstra halvan ("x,y,w,h", normaliserat 0..1)
+```
+
+Ren IR-film fungerar ofta acceptabelt med RGB-tränade modeller (white-hot),
+men med sänkt träffsäkerhet — testa mot ditt material.
 
 ## Lokal utveckling
 

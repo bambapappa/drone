@@ -23,3 +23,5 @@ videos/*
 !videos/.gitkeep
 *.pt
 runs/
+models/*
+!models/.gitkeep

@@ -1,3 +1,4 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -13,6 +14,10 @@ class Settings(BaseSettings):
     source: str = ""
     video_dir: str = "videos"
     loop: bool = True  # restart file sources when they end
+    # Crop frames to this region before any analysis: "x,y,w,h" normalized 0..1.
+    # For split-screen IR/visual footage: select the visual half so people
+    # aren't double-counted. Empty = full frame.
+    analysis_roi: str = ""
 
     # --- Detection model ---
     model: str = "yolo11n.pt"  # any Ultralytics .pt; class names are introspected
@@ -65,6 +70,27 @@ class Settings(BaseSettings):
 
     def threat_class_set(self) -> set[str]:
         return {c.strip().lower() for c in self.threat_classes.split(",") if c.strip()}
+
+    @field_validator("analysis_roi")
+    @classmethod
+    def _validate_roi(cls, v: str) -> str:
+        if not v.strip():
+            return ""
+        parts = [float(p) for p in v.split(",")]
+        if len(parts) != 4:
+            raise ValueError("ANALYSIS_ROI ska vara 'x,y,w,h' (normaliserat 0..1)")
+        x, y, w, h = parts
+        if not (0 <= x < 1 and 0 <= y < 1 and 0.05 <= w <= 1 and 0.05 <= h <= 1):
+            raise ValueError("ANALYSIS_ROI utanför giltigt intervall (0..1, w/h ≥ 0.05)")
+        if x + w > 1.0001 or y + h > 1.0001:
+            raise ValueError("ANALYSIS_ROI sticker utanför bilden (x+w respektive y+h ≤ 1)")
+        return v
+
+    def roi_tuple(self) -> tuple[float, float, float, float] | None:
+        if not self.analysis_roi.strip():
+            return None
+        x, y, w, h = (float(p) for p in self.analysis_roi.split(","))
+        return x, y, w, h
 
 
 settings = Settings()

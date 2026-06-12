@@ -68,6 +68,9 @@ class Pipeline:
         self.broadcaster = broadcaster
         self.source = VideoSource(source, loop=cfg.loop, max_fps=cfg.max_fps)
         self.source_name = source
+        self.roi = cfg.roi_tuple()  # crop applied to every frame before analysis
+        self.frame_w = 0  # dimensions of the (possibly cropped) analyzed frame
+        self.frame_h = 0
 
         self.gm = GlobalMotion()
         self.registry = PersonRegistry(
@@ -140,14 +143,14 @@ class Pipeline:
         if pos is None:
             self._danger_stab = None
             return
-        x, y = pos[0] * max(self.source.width, 1), pos[1] * max(self.source.height, 1)
+        x, y = pos[0] * max(self.frame_w, 1), pos[1] * max(self.frame_h, 1)
         self._danger_stab = self.gm.to_stab(x, y)
 
     def danger_screen_norm(self) -> tuple[float, float, bool] | None:
-        if self._danger_stab is None or self.source.width == 0:
+        if self._danger_stab is None or self.frame_w == 0:
             return None
         x, y = self.gm.to_screen(*self._danger_stab)
-        nx, ny = x / self.source.width, y / self.source.height
+        nx, ny = x / self.frame_w, y / self.frame_h
         off = not (0.0 <= nx <= 1.0 and 0.0 <= ny <= 1.0)
         return min(max(nx, 0.0), 1.0), min(max(ny, 0.0), 1.0), off
 
@@ -175,7 +178,9 @@ class Pipeline:
                     self.source.just_looped = False
                     self._on_scene_cut()
                     prev_small_gray = None
+                frame = self._apply_roi(frame)
                 h, w = frame.shape[:2]
+                self.frame_w, self.frame_h = w, h
                 scale = w / float(FLOW_W)
                 small_gray = cv2.cvtColor(
                     cv2.resize(frame, (FLOW_W, max(2, int(h / scale)))), cv2.COLOR_BGR2GRAY
@@ -305,6 +310,20 @@ class Pipeline:
             self._last_threats = res["threats"]
             self._threat_last_t = t
         self._irrational_pids |= res["irrational_pids"]
+
+    def _apply_roi(self, frame: np.ndarray) -> np.ndarray:
+        """Crop to the configured analysis region (e.g. the visual half of
+        split-screen IR footage) so all downstream stages see one consistent
+        view and people aren't double-counted."""
+        if self.roi is None:
+            return frame
+        h, w = frame.shape[:2]
+        rx, ry, rw, rh = self.roi
+        x0, y0 = int(rx * w), int(ry * h)
+        x1, y1 = min(w, int((rx + rw) * w)), min(h, int((ry + rh) * h))
+        if x1 - x0 < 32 or y1 - y0 < 32:
+            return frame
+        return np.ascontiguousarray(frame[y0:y1, x0:x1])
 
     def _on_scene_cut(self) -> None:
         """File loop restart (or equivalent discontinuity): drop all visual

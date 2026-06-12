@@ -118,8 +118,13 @@ FastAPI ── WebSocket /ws/stream ──► webbklient (canvas)
 - `scripts/integration_check.py` — kör mot live server via WebSocket och verifierar: ≥ 8 fps ut, personer i ≥ 50 % av paketen, begränsat antal person-ID (ingen ID-explosion), max boxhopp < 0,08 mellan konsekutiva paket, STILLA-flaggning under kamerapanorering (stabiliseringstest), eld/rök/basförslag, faropunkts-API.
 - Resultat 2026-06-12: 24 fps ut / ~9 Hz analys på 4 CPU-kärnor, 5 unika personer stabila över filmloopar, max boxhopp 0,07.
 
+### B15. VisDrone-vikter och analys-ROI för IR/split-screen
+- **VisDrone:** nedladdning sker via `scripts/fetch_visdrone.py` på en maskin med öppet nät (tredjeparts­vikter på Hugging Face — .pt är pickle, ladda bara betrodda filer; provenance noterad i skriptet). `models/` monteras in i containern på samma relativa sökväg som nativt, så `MODEL=models/visdrone-yolov8s.pt` fungerar i båda. Klassmappningen (B1) gör resten. VisDrone saknar vapenklasser ⇒ hotlagret tyst med den modellen.
+- **ANALYSIS_ROI:** riktiga drönarfilmer har ofta IR + visuell bild i split-screen eller bild-i-bild; utan beskärning dubbelräknas personer som syns i båda vyerna. `ANALYSIS_ROI="x,y,w,h"` (validerad vid start) beskär varje bildruta före all analys så att hela kedjan ser en konsistent vy. Automatisk layoutdetektering medvetet skjuten till PoC 2 — manuell ROI är förutsägbar.
+
 ## Logg
 
 - 2026-06-12: Repo var en tom FastAPI-mall. Arkitektur enligt ovan vald; PoC 1 påbörjad. Beslut B1–B13 nedtecknade innan implementation.
 - 2026-06-12: Boxutjämning omarbetad efter mätning (B3 uppdaterad): One Euro förkastad till förmån för flödesframmatning + EMA/slew. Scenklippshantering tillagd (B14). Integrationskontroll grön.
 - 2026-06-12: Kodgranskningsrunda (7 vinklar). Åtgärdat: JPEG-kodning hoppas över när inga klienter tittar (analysen fortsätter ackumulera), dött One Euro-filter borttaget, `VideoSource.frame_no` publik. Noterat för PoC 2 (medvetet ej åtgärdat nu): hothållning är global (ej per hottyp/plats), diskontinuitetshantering bör generaliseras bortom filloop (RTSP-glapp), GUI-rendering finns i två varianter (webbklient + snapshot-debugverktyg) som måste hållas i synk.
+- 2026-06-12: VisDrone-hämtskript + ANALYSIS_ROI för IR/split-screen (B15). ROI verifierad end-to-end (beskuren bildstorlek + faropunktskoordinater); full integrationskontroll grön utan ROI (boxhopp 0,042).

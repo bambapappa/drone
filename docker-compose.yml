@@ -10,6 +10,9 @@ services:
       - VIDEO_DIR=/videos
     volumes:
       - ./videos:/videos
+      # Egna modellvikter (t.ex. VisDrone): lägg .pt-filer i ./models och
+      # sätt MODEL=models/visdrone-yolov8s.pt i .env
+      - ./models:/app/models:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]

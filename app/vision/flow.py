@@ -20,46 +20,6 @@ LK_PARAMS = dict(
 )
 
 
-class OneEuroFilter:
-    """Scalar One Euro filter (Casiez et al. 2012).
-
-    Low cutoff at rest removes jitter; the beta term raises the cutoff with
-    speed so fast motion is tracked with minimal lag.
-    """
-
-    def __init__(self, min_cutoff: float = 1.0, beta: float = 0.0, d_cutoff: float = 1.0):
-        self.min_cutoff = min_cutoff
-        self.beta = beta
-        self.d_cutoff = d_cutoff
-        self._x: float | None = None
-        self._dx = 0.0
-        self._t: float | None = None
-
-    @staticmethod
-    def _alpha(cutoff: float, dt: float) -> float:
-        tau = 1.0 / (2.0 * math.pi * cutoff)
-        return 1.0 / (1.0 + tau / dt)
-
-    def __call__(self, x: float, t: float) -> float:
-        if self._t is None or self._x is None:
-            self._x, self._t = x, t
-            return x
-        dt = t - self._t
-        if dt <= 0:
-            return self._x
-        a_d = self._alpha(self.d_cutoff, dt)
-        dx = (x - self._x) / dt
-        self._dx = a_d * dx + (1.0 - a_d) * self._dx
-        cutoff = self.min_cutoff + self.beta * abs(self._dx)
-        a = self._alpha(cutoff, dt)
-        self._x = a * x + (1.0 - a) * self._x
-        self._t = t
-        return self._x
-
-    def reset_to(self, x: float, t: float) -> None:
-        self._x, self._t, self._dx = x, t, 0.0
-
-
 class BoxFilter:
     """Display smoother for a box (cx, cy, w, h), called every render frame.
 

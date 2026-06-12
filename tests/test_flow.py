@@ -1,24 +1,19 @@
-"""One Euro filter and global motion estimation."""
+"""Display-box smoothing and global motion estimation."""
 
 import numpy as np
 
-from app.vision.flow import BoxFilter, GlobalMotion, OneEuroFilter
+from app.vision.flow import BoxFilter, GlobalMotion
 
 
-def test_one_euro_smooths_jitter():
-    f = OneEuroFilter(min_cutoff=1.0, beta=0.0)
+def test_box_filter_smooths_jitter():
+    """Detection noise around a static box is damped, not passed through."""
+    bf = BoxFilter()
     rng = np.random.default_rng(0)
-    out = [f(100 + rng.normal(0, 2), i * 0.04) for i in range(100)]
-    # Output variance well below input noise variance
+    out = []
+    for i in range(100):
+        cx = bf((100 + rng.normal(0, 2), 100, 50, 80), i / 24)[0]
+        out.append(cx)
     assert np.std(out[20:]) < 1.5
-
-
-def test_one_euro_follows_fast_motion():
-    f = OneEuroFilter(min_cutoff=1.0, beta=0.05)
-    x = 0.0
-    for i in range(50):
-        x = f(i * 10.0, i * 0.04)  # 250 px/s
-    assert abs(x - 49 * 10.0) < 25  # small lag only
 
 
 def test_box_filter_step_glides():

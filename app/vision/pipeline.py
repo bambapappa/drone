@@ -1,8 +1,9 @@
 """Analysis pipeline: two threads per source (see DECISIONS.md B3).
 
 Render thread (~max_fps): reads frames, estimates camera motion, carries
-boxes along with local optical flow, smooths with One Euro filters, encodes
-JPEG and broadcasts [meta-JSON][JPEG] packets.
+boxes along with local optical flow, smooths display boxes with a
+flow-fed-forward EMA + slew filter, encodes JPEG and broadcasts
+[meta-JSON][JPEG] packets.
 
 Detect thread (as fast as the CPU allows): YOLO + BoT-SORT on the latest
 frame, person registry (re-ID), behavior analysis, situation assessment,
@@ -39,7 +40,7 @@ class DisplayTrack:
     track_id: int
     box: tuple[float, float, float, float]  # raw: flow-advected + detection-corrected (source px)
     filt: BoxFilter
-    disp: tuple[float, float, float, float] = (0, 0, 0, 0)  # displayed: One Euro over raw, every frame
+    disp: tuple[float, float, float, float] = (0, 0, 0, 0)  # displayed: smoothed raw, every frame
     pid: int | None = None
     cls_name: str = "person"
     is_threat: bool = False
@@ -196,8 +197,11 @@ class Pipeline:
                     fps_ema = 0.9 * fps_ema + 0.1 * (1.0 / dt) if fps_ema else 1.0 / dt
                 self.render_fps = fps_ema
 
-                packet = self._build_packet(frame, t)
-                self.broadcaster.publish(packet)
+                # Analysis always runs (counts, behavior, situation keep
+                # accumulating) but encoding is wasted work with no viewers.
+                if self.broadcaster.client_count > 0:
+                    packet = self._build_packet(frame, t)
+                    self.broadcaster.publish(packet)
         except Exception as e:  # surface, don't die silently
             self.status = "error"
             self.error = f"{type(e).__name__}: {e}"
@@ -223,7 +227,7 @@ class Pipeline:
         job = DetJob(
             frame=frame,
             t=t,
-            frame_no=self.source._frame_no,
+            frame_no=self.source.frame_no,
             global_offset=self.gm.offset.copy(),
             track_flow_acc={tid: tr.flow_acc.copy() for tid, tr in self._tracks.items()},
         )

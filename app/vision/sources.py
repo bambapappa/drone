@@ -41,7 +41,7 @@ class VideoSource:
         self.width = 0
         self.height = 0
         self._next_t = 0.0
-        self._frame_no = 0
+        self.frame_no = 0
         self.just_looped = False  # set when the file restarted (scene cut)
 
     def open(self) -> bool:
@@ -75,15 +75,15 @@ class VideoSource:
             if not ok:
                 if self.loop:
                     self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                    self._frame_no = 0
+                    self.frame_no = 0
                     self.just_looped = True
                     ok, frame = self.cap.read()
                     if not ok:
                         return None
                 else:
                     return None
-            self._frame_no += 1
-            if self._frame_no % skip != 0:
+            self.frame_no += 1
+            if self.frame_no % skip != 0:
                 continue
             if step > 0:
                 now = time.monotonic()

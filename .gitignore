@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Docker
+*.log
+
+# OS
+.DS_Store

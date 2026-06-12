@@ -1,0 +1,7 @@
+services:
+  api:
+    restart: always
+    environment:
+      - DEBUG=false
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"

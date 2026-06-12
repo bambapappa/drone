@@ -1,0 +1,177 @@
+:root {
+  --bg: #0c1014;
+  --bg2: #141a21;
+  --fg: #e8edf2;
+  --dim: #7c8a99;
+  --accent: #34c3ff;
+  --ok: #2ecc71;
+  --warn: #ffa502;
+  --danger: #ff4757;
+  --chip: #1d2630;
+  --chip-on: #0e4a66;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+html, body { height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  display: flex;
+  flex-direction: column;
+}
+
+#topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--bg2);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+#brand { font-weight: 800; letter-spacing: 1px; font-size: 13px; color: var(--accent); }
+#brand span { color: var(--fg); }
+
+#stats { display: flex; gap: 6px; }
+.stat {
+  background: var(--chip);
+  border-radius: 8px;
+  padding: 3px 8px;
+  text-align: center;
+  min-width: 48px;
+}
+.stat b { display: block; font-size: 15px; }
+.stat small { color: var(--dim); font-size: 9px; text-transform: uppercase; letter-spacing: .5px; }
+.stat.warn.active { background: #5a3a00; }
+.stat.warn.active b { color: var(--warn); }
+.stat.danger { background: #5c1119; animation: pulse 1s infinite; }
+.stat.danger b { color: var(--danger); }
+.stat.dim b { color: var(--dim); font-weight: 400; }
+.hidden { display: none !important; }
+
+@keyframes pulse { 50% { opacity: .55; } }
+
+main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+
+#stage { position: relative; background: #000; line-height: 0; }
+#view { width: 100%; height: auto; max-height: 72vh; object-fit: contain; display: block; margin: 0 auto; }
+
+#threat-banner {
+  position: absolute;
+  top: 8px; left: 50%;
+  transform: translateX(-50%);
+  background: rgba(200, 20, 40, .92);
+  padding: 6px 16px;
+  border-radius: 8px;
+  font-weight: 800;
+  font-size: 14px;
+  z-index: 5;
+  animation: pulse 1s infinite;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+#overlay-msg {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0,0,0,.55);
+  color: var(--dim);
+  font-size: 15px;
+  line-height: 1.5;
+  z-index: 4;
+  text-align: center;
+  padding: 20px;
+}
+
+#danger-hint {
+  position: absolute;
+  bottom: 10px; left: 50%;
+  transform: translateX(-50%);
+  background: rgba(20,26,33,.9);
+  border: 1px solid var(--danger);
+  color: var(--fg);
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  z-index: 5;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+#toggles {
+  display: flex;
+  gap: 6px;
+  padding: 8px 10px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  background: var(--bg);
+}
+#toggles::-webkit-scrollbar { display: none; }
+
+.chip {
+  flex: 0 0 auto;
+  background: var(--chip);
+  color: var(--fg);
+  border: 1px solid #2a3540;
+  border-radius: 18px;
+  padding: 7px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+}
+.chip.on { background: var(--chip-on); border-color: var(--accent); }
+.chip.armed { background: #5c1119; border-color: var(--danger); }
+
+#panel {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  grid-template-columns: 1fr;
+}
+.card {
+  background: var(--bg2);
+  border-radius: 12px;
+  padding: 12px;
+}
+.card h3 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--dim);
+  margin-bottom: 8px;
+}
+.card ul { list-style: none; }
+.card li { padding: 3px 0; font-size: 13px; }
+.card li.alert { color: var(--danger); font-weight: 600; }
+.card li.note { color: var(--warn); }
+.dim { color: var(--dim); }
+.small { font-size: 11px; margin-top: 6px; }
+
+.row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+select, button:not(.chip), .upload-btn {
+  background: var(--chip);
+  color: var(--fg);
+  border: 1px solid #2a3540;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+select { flex: 1; min-width: 120px; max-width: 100%; }
+
+@media (min-width: 1000px) {
+  main { flex-direction: row; align-items: flex-start; }
+  #stage { flex: 1; }
+  #view { max-height: calc(100vh - 60px); }
+  #toggles { flex-direction: column; width: 130px; }
+  .chip { text-align: left; }
+  #panel { width: 320px; }
+  #panel.hidden { display: grid !important; }
+}

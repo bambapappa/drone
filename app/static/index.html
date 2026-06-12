@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="sv">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <meta name="theme-color" content="#0c1014">
+  <title>Drönare · Insatsanalys</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header id="topbar">
+    <div id="brand">INSATS<span>DRÖNARE</span></div>
+    <div id="stats">
+      <div class="stat" id="st-visible" title="Synliga nu"><b>0</b><small>synliga</small></div>
+      <div class="stat" id="st-unique" title="Unika totalt"><b>0</b><small>totalt</small></div>
+      <div class="stat warn" id="st-irr" title="Irrationellt beteende"><b>0</b><small>irrat.</small></div>
+      <div class="stat danger hidden" id="st-threat" title="Hot"><b>HOT</b><small>aktivt</small></div>
+      <div class="stat dim" id="st-fps"><b>–</b><small>fps</small></div>
+    </div>
+  </header>
+
+  <main>
+    <div id="stage">
+      <div id="threat-banner" class="hidden">⚠ HOT UPPTÄCKT</div>
+      <canvas id="view"></canvas>
+      <div id="overlay-msg">Ansluter …</div>
+      <div id="danger-hint" class="hidden">Tryck i bilden för att markera faran</div>
+    </div>
+
+    <nav id="toggles">
+      <button class="chip on" data-layer="boxes">Boxar</button>
+      <button class="chip on" data-layer="ids">ID</button>
+      <button class="chip" data-layer="trails">Spår</button>
+      <button class="chip on" data-layer="status">Beteende</button>
+      <button class="chip on" data-layer="threats">Hot</button>
+      <button class="chip on" data-layer="hazards">Miljö</button>
+      <button class="chip on" data-layer="base">Bas</button>
+      <button class="chip" id="btn-danger">🎯 Markera fara</button>
+      <button class="chip" id="btn-clear-danger">Rensa fara</button>
+      <button class="chip" id="btn-panel">Panel</button>
+    </nav>
+
+    <section id="panel" class="hidden">
+      <div class="card">
+        <h3>Lägesbild</h3>
+        <ul id="situation-list"><li class="dim">Ingen lägesinfo ännu.</li></ul>
+      </div>
+      <div class="card">
+        <h3>Hot</h3>
+        <ul id="threat-list"><li class="dim">Inga hot upptäckta.</li></ul>
+      </div>
+      <div class="card">
+        <h3>Källa</h3>
+        <div class="row">
+          <select id="video-select"></select>
+          <button id="btn-switch">Byt</button>
+        </div>
+        <div class="row">
+          <label class="upload-btn">Ladda upp film<input type="file" id="upload" accept="video/*" hidden></label>
+          <span id="upload-status" class="dim"></span>
+        </div>
+        <div id="src-info" class="dim small"></div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

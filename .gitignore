@@ -17,3 +17,9 @@ dist/
 
 # OS
 .DS_Store
+
+# Video assets & model weights
+videos/*
+!videos/.gitkeep
+*.pt
+runs/

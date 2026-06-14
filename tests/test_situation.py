@@ -92,3 +92,34 @@ def test_no_base_without_information():
     for i in range(5):
         state = an.update(frame, i * 0.2, None)
     assert state.base is None
+
+
+def _veg_frame(w=320, h=180):
+    f = solid((40, 140, 40), w, h)  # green vegetation everywhere (BGR)
+    return f
+
+
+def test_base_prefers_through_road_with_exit():
+    """A gray road spanning to both side edges should be chosen as base, with
+    an escape direction reported."""
+    an = SituationAnalyzer()
+    frame = _veg_frame()
+    frame[80:110, :] = (120, 120, 120)  # horizontal road, full width => exits L/R
+    state = None
+    for i in range(4):
+        state = an.update(frame, i * 0.2, (0.5, 0.05))  # danger at top
+    assert state.base is not None
+    assert 0.35 < state.base[1] < 0.75  # on the road band, away from top danger
+    assert any("möjlig utväg" in r for r in state.base_reasons)
+
+
+def test_base_warns_on_dead_end_pocket():
+    """A small open pocket walled in by vegetation has no corridor out."""
+    an = SituationAnalyzer()
+    frame = _veg_frame()
+    frame[70:95, 150:175] = (120, 120, 120)  # tiny open pocket, reaches no edge
+    state = None
+    for i in range(4):
+        state = an.update(frame, i * 0.2, (0.1, 0.05))
+    assert state.base is not None
+    assert not any("möjlig utväg" in r for r in state.base_reasons)

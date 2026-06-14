@@ -81,6 +81,38 @@ def _dir_text(dx: float, dy: float) -> str:
     return names[int(((ang + 22.5) % 360) // 45)]
 
 
+def _drivable_mask(small_bgr: np.ndarray) -> np.ndarray:
+    """Rough drivable/open-ground estimate: low-saturation (gray asphalt /
+    gravel / concrete / open dirt), non-vegetation, mid-brightness, non-black.
+    Trees and grass are green/saturated; the blacked-out IR inset and letterbox
+    are near-black. Heuristic — water reads like asphalt by colour, so open
+    water can be misclassified (PoC limitation, see DECISIONS B21)."""
+    hsv = cv2.cvtColor(small_bgr, cv2.COLOR_BGR2HSV)
+    s, v = hsv[..., 1], hsv[..., 2]
+    b, g, r = cv2.split(small_bgr.astype(np.int16))
+    vegetation = (g > r + 8) & (g > b + 8)
+    openish = (s < 70) & (v > 45) & (v < 235) & ~vegetation
+    m = openish.astype(np.uint8)
+    m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+    return m
+
+
+def _escape_dirs(drivable: np.ndarray, px: int, py: int, w: int, h: int) -> list[str]:
+    """Frame-edge directions reachable from (px, py) along a mostly-open
+    corridor — i.e. a way out for vehicles."""
+    out = []
+    for name, (dx, dy) in (("vänster", (-1, 0)), ("höger", (1, 0)), ("uppåt", (0, -1)), ("nedåt", (0, 1))):
+        x, y, samples = px, py, []
+        while 0 <= x < w and 0 <= y < h:
+            samples.append(1 if drivable[y, x] else 0)
+            x += dx * 2
+            y += dy * 2
+        if len(samples) > 5 and float(np.mean(samples)) > 0.65:
+            out.append(name)
+    return out
+
+
 class SituationAnalyzer:
     def __init__(
         self,
@@ -145,7 +177,7 @@ class SituationAnalyzer:
             self._drift = (1 - self.flow_ema) * self._drift + self.flow_ema * v_norm
         self.state.smoke_drift = (float(self._drift[0]), float(self._drift[1]))
 
-        self._suggest_base(danger_norm)
+        self._suggest_base(danger_norm, small, sm)
         self._prev_gray = gray
         return self.state
 
@@ -178,40 +210,47 @@ class SituationAnalyzer:
             return prev  # short grace to avoid flicker
         return None
 
-    def _suggest_base(self, danger_norm: tuple[float, float] | None) -> None:
+    def _suggest_base(
+        self, danger_norm: tuple[float, float] | None, small_bgr: np.ndarray, sm: np.ndarray
+    ) -> None:
+        """Score candidate base locations against the operational criteria:
+        away from the danger, not downwind of the smoke, and crucially with an
+        escape — either an open corridor reaching a frame edge (drive-through)
+        or enough open area to turn rescue vehicles around (DECISIONS B6/B21).
+        All in image coordinates; clearly a heuristic suggestion."""
         st = self.state
-        reasons: list[str] = []
-        direction: tuple[float, float] | None = None
-
-        drift_mag = math.hypot(*st.smoke_drift)
-        if st.smoke is not None and drift_mag > 0.0008:
-            direction = (-st.smoke_drift[0], -st.smoke_drift[1])
-            reasons.append(
-                f"Rök driver åt {_dir_text(*st.smoke_drift)} — bas uppvind ({_dir_text(*direction)})"
-            )
+        h, w = small_bgr.shape[:2]
+        drift = st.smoke_drift
+        drift_mag = math.hypot(*drift)
         anchor = danger_norm or (st.fire.pos if st.fire else None)
-        if direction is None and anchor is not None:
-            direction = (0.5 - anchor[0], 0.5 - anchor[1])
-            if math.hypot(*direction) < 0.05:
-                direction = (0.0, 1.0)
-            reasons.append("Bas på motsatt sida om faran")
-        if direction is None:
+
+        # A base only makes sense relative to a hazard.
+        if anchor is None and drift_mag <= 0.0008:
             st.base, st.base_reasons = None, []
             self._base_target = None
             return
 
-        n = math.hypot(*direction)
-        ux, uy = direction[0] / n, direction[1] / n
-        start = anchor or (0.5, 0.5)
+        drivable = _drivable_mask(small_bgr)
         lo, hi = self.base_margin, 1.0 - self.base_margin
-        # Walk from the anchor toward the frame edge, keep inside margins.
-        scale = 1.0
-        bx, by = start[0] + ux * scale, start[1] + uy * scale
-        bx, by = min(max(bx, lo), hi), min(max(by, lo), hi)
-        target = (bx, by)
+        best = None
+        for ny in np.linspace(lo, hi, 6):
+            for nx in np.linspace(lo, hi, 6):
+                cand = self._score_base(float(nx), float(ny), anchor, drift, drift_mag, drivable, sm, w, h)
+                if best is None or cand["score"] > best["score"]:
+                    best = cand
+        target = (best["x"], best["y"])
 
+        reasons: list[str] = []
+        if best["exits"]:
+            reasons.append(f"Öppen mark åt {', '.join(best['exits'])} — möjlig utväg")
+        elif best["turn_room"]:
+            reasons.append("Öppen yta nog att vända räddningsfordon på")
+        else:
+            reasons.append("⚠ Inramad av hinder — kontrollera utväg på plats")
+        if drift_mag > 0.0008:
+            reasons.append(f"Rök driver åt {_dir_text(*drift)}; bas uppvind/ur rökvägen")
         if anchor is not None:
-            reasons.append("Avstånd till faran: håll säkerhetsavstånd (skala okänd i PoC)")
+            reasons.append("Bort från faran (håll säkerhetsavstånd — skala okänd i PoC)")
         reasons.append("Heuristiskt förslag — beslut fattas av räddningsledare")
 
         # Hysteresis: only move the marker when the target shifts significantly.
@@ -223,3 +262,35 @@ class SituationAnalyzer:
             self._base_target = target
         st.base = self._base_target
         st.base_reasons = reasons
+
+    def _score_base(self, nx, ny, anchor, drift, drift_mag, drivable, sm, w, h) -> dict:
+        px, py = int(nx * w), int(ny * h)
+        r = max(4, int(0.12 * w))
+        x0, y0 = max(0, px - r), max(0, py - r)
+        x1, y1 = min(w, px + r), min(h, py + r)
+        win = drivable[y0:y1, x0:x1]
+        openness = float(win.mean()) if win.size else 0.0
+        smoke_pen = float((sm[y0:y1, x0:x1] > 0).mean()) if sm[y0:y1, x0:x1].size else 0.0
+
+        safe_dist = math.hypot(nx - anchor[0], ny - anchor[1]) if anchor else 1.0
+        downwind = 0.0
+        if anchor is not None and drift_mag > 1e-4:
+            dx, dy = nx - anchor[0], ny - anchor[1]
+            dn = math.hypot(dx, dy)
+            if dn > 1e-3:
+                cos = (dx * drift[0] + dy * drift[1]) / (dn * drift_mag)
+                downwind = max(0.0, cos)  # pointing the way smoke drifts = exposed
+
+        exits = _escape_dirs(drivable, px, py, w, h)
+        turn_room = openness > 0.55
+        escape_bonus = 0.6 if exits else (0.3 if turn_room else 0.0)
+
+        score = 1.2 * min(safe_dist, 0.7) + 1.0 * openness + escape_bonus - 1.6 * downwind - 1.3 * smoke_pen
+        return {
+            "score": score,
+            "x": round(nx, 3),
+            "y": round(ny, 3),
+            "exits": exits,
+            "turn_room": turn_room,
+            "openness": round(openness, 2),
+        }

@@ -164,6 +164,10 @@ class Pipeline:
     # ---------- render thread ----------
 
     def _render_loop(self) -> None:
+        """Render thread: the display heartbeat. Each frame it estimates camera
+        motion, advects boxes with optical flow, merges any fresh detection,
+        and broadcasts a JPEG+metadata packet — all at display rate, decoupled
+        from the slower detect thread so boxes never stall."""
         try:
             if not self.source.open():
                 self.status = "error"
@@ -254,6 +258,18 @@ class Pipeline:
             self._job_cv.notify()
 
     def _merge_detections(self, t: float) -> None:
+        """Fold the detect thread's latest result into the display tracks.
+
+        Detection ran on a frame that is now several frames old, during which
+        the camera panned and people moved. We therefore shift each detection
+        forward to "now" before correcting the display box to it:
+          - existing track: by how far that track's optical flow carried it
+            since the job was submitted (`flow_acc - acc0`);
+          - new track: by the global camera drift since (`gm.offset - offset0`).
+        Without this the box would snap backward to where the person was when
+        detection started. The corrected target is then eased in by the box
+        filter (slew-limited) so it glides rather than teleports.
+        """
         with self._result_lock:
             res = self._result
             self._result = None
@@ -388,6 +404,10 @@ class Pipeline:
     # ---------- detect thread ----------
 
     def _detect_loop(self) -> None:
+        """Detect thread: load the model once, then repeatedly take the newest
+        submitted frame, run YOLO+tracking+analysis, and publish the result for
+        the render thread to merge. Model import/load is lazy so the web app and
+        unit tests don't require torch."""
         try:
             from app.vision.detector import Detector
 

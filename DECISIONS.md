@@ -82,7 +82,18 @@ FastAPI ── WebSocket /ws/stream ──► webbklient (canvas)
 - **Rekommendation:** GPU/MPS (användarens M5) eller kraftig CPU för `TILES=2`; default av (`TILES=1`) så svaga maskiner inte drabbas oväntat.
 
 ### B18. Känt falsklarm: eldheuristiken triggar på röda taktegel (öppen punkt)
-- **Observation (brandfilmen):** `fire_mask` (mättat rött/orange) slår ut på svenska tegeltak → falsk "BRAND"-markör. Loggat, ej åtgärdat (person­detektering är prio). Möjlig fix: kräva samtidig rök i närheten, temporal flimmer-signatur, eller tränad eld/rök-segmentering (PoC 2). Tills vidare: `Miljö`-lagret kan togglas av i GUI:t.
+- **Observation (brandfilmen):** `fire_mask` (mättat rött/orange) slår ut på svenska tegeltak → falsk "BRAND"-markör. **ÅTGÄRDAT 2026-06-14:** eld accepteras nu bara om rörlig rök finns i blobbens närområde (`_smoke_near`, `FIRE_REQUIRE_SMOKE`). Verifierat live: BRAND 0/120 paket på tak, men flaggas korrekt vid den faktiskt rykande byggnaden.
+
+### B19. Spårtrösklar sänkta för bättre personräkning (2026-06-14)
+- **Problem (rapporterat av användaren):** på brandfilmen visade systemet 6 unika där en människa ser 9. Mätning: detektorn *hittar* 9–14 personer i täta rutor, men BoT-SORT promotade bara detektioner ≥ `new_track_thresh=0.35` till spår, och VisDrones småpersons-confidens ligger 0,25–0,42 → äkta personer föll bort innan de blev spår.
+- **Val:** sänkt `track_high_thresh` 0,30→0,25, `new_track_thresh` 0,35→0,28, `track_low_thresh` 0,10→0,08. Precisionen hålls av den temporala bekräftelsen (B16: unik först efter ≥ 2 s) — flimrande falskdetektioner hinner aldrig bekräftas.
+- **Mätt resultat:** brandklippet 6 → **12 unika** (live, tiles=2). Skogsfilmen (nästan bara skog) gav fortsatt ~0 unika live trots enstaka falska offline-träffar — bevis på att 2 s-bekräftelsen filtrerar skogsbrus. Högre recall där folk finns, bibehållen precision där de inte gör det.
+- **Kvarstående:** per-ruta-visning på CPU-sandlådan toppar ~4 (mot ~9 i bilden), till stor del artefakt av 2 Hz-detektion; på GPU/MPS (15–30 Hz) bekräftas transienta spår snabbt → siffran närmar sig sanningen. Mäts om på GPU.
+
+### Filkarakterisering (riktiga insatsfilmer)
+- `MS-ED…` lägenhetsbrand, 960×540, snett uppifrån — tät folksamling, rök. Bäst hittills för persondetektering.
+- `Trafikolycka.Ovning.Aviant` skogsbilolycka, 1440×1080, **rakt uppifrån (nadir), snabb drönarrörelse → rörelseoskärpa**, mest tom skog, ~2 personer vid fordonen. Svårast. Drönarben som svarta kantstaplar (klipps med `ANALYSIS_ROI`).
+- `…fyrhjulingsolycka_3_skadade` (960×540, 16 min), `Ovning.SU.ambulans.1/2` (**1920×1080**) — nya 2026-06-14. 3-skadade-filmen intressant för STILLA/liggande-beteende; ambulansfilmerna är Full HD (bättre för små mål). Analyseras härnäst.
 
 ### B8. Leverans till klient: WebSocket med JPEG + metadata per bildruta
 - **Val:** Binärt WS-meddelande per bildruta: `[längd][meta-JSON][JPEG]`. Klienten ritar bilden på canvas och lagren (boxar, ID, spår, status, bas, rök, hot) ovanpå — **togglar är därmed rena klientval** och kräver ingen serveromrendering. Per-klient-kö med längd 1 (äldsta kastas) → en långsam mobil ger sig själv lägre fps men aldrig växande fördröjning.

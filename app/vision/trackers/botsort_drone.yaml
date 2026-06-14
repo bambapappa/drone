@@ -2,11 +2,14 @@
 # Based on ultralytics botsort.yaml defaults; see DECISIONS.md B2.
 
 # Thresholds tuned against real drone footage (small, low-confidence people
-# at altitude with the VisDrone model) — see DECISIONS.md B16.
+# at altitude with the VisDrone model) — see DECISIONS.md B16/B19.
+# VisDrone's tiny-person confidences cluster at 0.25-0.42; gating new tracks
+# at 0.35 dropped real people, so admit lower and let the registry's 2 s
+# confirmation (B16) reject flicker/false positives instead.
 tracker_type: botsort
-track_high_thresh: 0.30
-track_low_thresh: 0.10
-new_track_thresh: 0.35
+track_high_thresh: 0.25
+track_low_thresh: 0.08
+new_track_thresh: 0.28
 track_buffer: 120          # ~8 s at 15 Hz detection: survive occlusions without ID churn
 match_thresh: 0.85
 fuse_score: True

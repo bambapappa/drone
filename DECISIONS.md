@@ -101,7 +101,7 @@ FastAPI ── WebSocket /ws/stream ──► webbklient (canvas)
 - **Offline-validering på alla 8 filmer:** 3/3 PiP-filmer korrekt detekterade (alla top-right i materialet), 0/5 rena filmer ger falsklarm. `PIP_AUTODETECT` (default på) styr; manuell `IGNORE_REGIONS` vinner och stänger av auto. Detekterad layout exponeras i `/api/state` (`pip_layout`).
 - **Live-verifierat 2026-06-14:** servern startar fint (transient fel tidigare, se B22/`serve.sh`); på fyrhjulingsfilmen — där IR-rutan tänds först en bit in — låstes `top-right` korrekt efter ~24 s uppspelning och inga persondetektioner hamnade i den maskade kvadranten.
 - **Rättat efter live-test:** detektorn låste tidigare "ingen PiP" redan efter 8 bildrutor → missade insättningar som tänds senare (fyrhjuling ~40 s). Nu rullande fönster som bara låser ett positivt utfall och fortsätter sampla annars (var 8:e renderruta). Aldrig permanent "ingen".
-- **Begränsning:** split-fall maskeras f.n. (ej beskärs) — slösar halva detektorupplösningen; beskärning är en framtida förbättring.
+- **Split-fall:** beskärs nu till den aktiva (icke-IR) halvan via `ANALYSIS_ROI` (full detektorupplösning på riktig video) i stället för att maskas; hörn-PiP maskas fortsatt. Ej live-testat (saknar split-film) men logiken enhetstestad och hörn-/no-PiP-vägarna oförändrade + grön integrationskontroll.
 
 ### B21. Basförslag väger in utväg och vändyta (2026-06-14, beställarkriterier)
 - **Beställarens kriterier:** en bra bas ligger (1) inte i farans/rökens riktning, (2) har en **väg ut** så att räddningsfordon inte låses in i en återvändsgränd — antingen en genomfartsväg eller en yta stor nog att vända på.
@@ -184,3 +184,4 @@ Två riktiga filmer (trafikolycka med IR-PiP; lägenhetsbrand med rök, 960×540
 - 2026-06-14: Auto-detektering av IR-PiP/split (B20) — gråskale-signal + temporal låsning, validerad offline på alla 8 filmer (3/3 träff, 0/5 falsklarm), 59 tester gröna. Live-verifiering uteblev (server startar ej i sandlådan).
 - 2026-06-14: Basförslag väger in utväg (öppen korridor till bildkant) och vändyta samt undviker rökmedvind (B21, beställarkriterier). Öppen-mark-skattning ur bild; ärligt märkt som heuristik. 61 tester gröna.
 - 2026-06-14: IR-PiP-detektorn fixad för insättningar som tänds sent (rullande fönster, låser bara positivt). Live-verifierat: fyrhjuling låste top-right efter ~24 s, inga detektioner i maskad ruta. serve.sh tillagt för robust omstart. 61 tester gröna.
+- 2026-06-14: Split-screen beskärs nu till aktiv halva (split_active_roi) i stället för maskning — full upplösning på riktig video. Hörn-PiP oförändrad. 63 tester gröna, integrationskontroll grön.

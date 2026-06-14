@@ -92,6 +92,17 @@ def _default_rect(layout: str) -> tuple[float, float, float, float]:
     return round(x, 3), round(y, 3), w, h
 
 
+def split_active_roi(layout: str) -> tuple[float, float, float, float] | None:
+    """For a 50% split layout, the crop covering the active (non-IR) half — so
+    detection runs at full resolution on the real video instead of wasting half
+    the frame on a masked thermal pane. None for corner/other layouts."""
+    if layout == "split-right":  # IR on the right -> keep the left half
+        return (0.0, 0.0, 0.5, 1.0)
+    if layout == "split-left":  # IR on the left -> keep the right half
+        return (0.5, 0.0, 0.5, 1.0)
+    return None
+
+
 class PipAutoDetector:
     """Locks an IR-inset layout once it agrees across `need` of the last
     `window` samples, then stops.

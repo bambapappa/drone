@@ -78,6 +78,28 @@ def test_transient_not_locked():
     assert not det.locked  # one stray positive never reaches need=4
 
 
+def test_split_active_roi_mapping():
+    from app.vision.pip import split_active_roi
+
+    assert split_active_roi("split-right") == (0.0, 0.0, 0.5, 1.0)  # IR right -> keep left
+    assert split_active_roi("split-left") == (0.5, 0.0, 0.5, 1.0)  # IR left -> keep right
+    assert split_active_roi("top-right") is None  # corner -> not a crop
+    assert split_active_roi("") is None
+
+
+def test_split_detection_feeds_active_crop():
+    """End-to-end of the split path's pure logic: a right-split frame locks
+    split-right, which maps to cropping the left half for analysis."""
+    from app.vision.pip import split_active_roi
+
+    rng = np.random.default_rng(11)
+    det = PipAutoDetector()
+    for _ in range(12):
+        det.feed(add_gray_inset(colorful(rng), 0.5, 0.0, 1.0, 1.0, rng))
+    assert det.layout == "split-right"
+    assert split_active_roi(det.layout) == (0.0, 0.0, 0.5, 1.0)
+
+
 def test_single_frame_helper():
     rng = np.random.default_rng(5)
     fr = add_gray_inset(colorful(rng), 0.0, 0.0, 0.34, 0.46, rng)

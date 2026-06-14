@@ -28,7 +28,7 @@ from app.core.config import Settings
 from app.vision.behavior import BehaviorAnalyzer, BehaviorConfig
 from app.vision.broadcast import Broadcaster
 from app.vision.flow import BoxFilter, GlobalMotion, local_box_flow
-from app.vision.pip import PipAutoDetector
+from app.vision.pip import PipAutoDetector, split_active_roi
 from app.vision.registry import PersonRegistry, appearance_hist
 from app.vision.situation import SituationAnalyzer
 from app.vision.sources import VideoSource
@@ -324,12 +324,22 @@ class Pipeline:
         self._irrational_pids |= res["irrational_pids"]
 
     def _apply_pip_result(self) -> None:
-        """Adopt the auto-detected IR inset (if any) as an ignore region."""
+        """Adopt the auto-detected IR inset: a 50% split is cropped away (full
+        resolution kept on the active half), a corner inset is masked out."""
         self._pip_applied = True
         if self._pip is None or self._pip.region is None:
             return
-        self.ignore = [*self.ignore, self._pip.region]
         self.pip_layout = self._pip.layout
+        active = split_active_roi(self._pip.layout or "")
+        if active is not None and self.roi is None:
+            # Crop to the real half. Dims change, so reset motion/danger/tracks.
+            self.roi = active
+            self._danger_stab = None
+            self.gm = GlobalMotion()
+            self._on_scene_cut()
+        else:
+            # Corner inset (or split when a manual ROI is already set): mask it.
+            self.ignore = [*self.ignore, self._pip.region]
 
     def _in_ignore(self, nx: float, ny: float) -> bool:
         for rx, ry, rw, rh in self.ignore:

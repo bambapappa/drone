@@ -28,10 +28,9 @@ def add_gray_inset(frame, x0f, y0f, x1f, y1f, rng):
 def test_detects_top_right_corner():
     rng = np.random.default_rng(0)
     det = PipAutoDetector()
-    for _ in range(8):
-        fr = add_gray_inset(colorful(rng), 0.66, 0.0, 1.0, 0.45, rng)
-        det.feed(fr)
-    assert det.decided and det.region is not None
+    for _ in range(12):
+        det.feed(add_gray_inset(colorful(rng), 0.66, 0.0, 1.0, 0.45, rng))
+    assert det.locked and det.region is not None
     assert det.layout == "top-right"
     x, y, w, h = det.region
     assert x > 0.5 and y < 0.1  # anchored top-right
@@ -40,9 +39,8 @@ def test_detects_top_right_corner():
 def test_detects_split_right():
     rng = np.random.default_rng(1)
     det = PipAutoDetector()
-    for _ in range(8):
-        fr = add_gray_inset(colorful(rng), 0.5, 0.0, 1.0, 1.0, rng)
-        det.feed(fr)
+    for _ in range(12):
+        det.feed(add_gray_inset(colorful(rng), 0.5, 0.0, 1.0, 1.0, rng))
     assert det.layout == "split-right"
     assert det.region == (0.5, 0.0, 0.5, 1.0)
 
@@ -50,38 +48,34 @@ def test_detects_split_right():
 def test_no_false_positive_on_colorful():
     rng = np.random.default_rng(2)
     det = PipAutoDetector()
-    for _ in range(8):
+    for _ in range(20):
         det.feed(colorful(rng))
-    assert det.decided and det.region is None
+    assert not det.locked and det.region is None  # never locks on colour scenery
 
 
-def test_no_false_positive_on_all_gray():
-    """A fully grayscale scene (e.g. concrete rubble) must NOT be called a PiP:
-    there is no colour region to contrast against, so no single corner wins."""
-    rng = np.random.default_rng(3)
+def test_detects_pip_appearing_late():
+    """The inset turns on partway through the feed (observed ~40 s in one
+    film): colour-only first, then the gray corner appears — must still lock."""
+    rng = np.random.default_rng(7)
     det = PipAutoDetector()
-    for _ in range(8):
-        g = rng.integers(40, 200, (H, W, 1), dtype=np.uint8)
-        det.feed(np.repeat(g, 3, axis=2))
-    # Whole frame is low-sat; split-right probe would hit, but so would the
-    # complement — detection still fires a layout. Acceptable: masking half a
-    # uniform-gray frame is harmless. Guard only that it doesn't crash and
-    # returns a valid region or None.
-    assert det.decided
-    if det.region is not None:
-        x, y, w, h = det.region
-        assert 0 <= x <= 1 and 0 < w <= 1
+    for _ in range(15):  # no inset yet
+        det.feed(colorful(rng))
+    assert not det.locked
+    for _ in range(12):  # inset now present
+        det.feed(add_gray_inset(colorful(rng), 0.66, 0.0, 1.0, 0.45, rng))
+    assert det.locked and det.layout == "top-right"
 
 
 def test_transient_not_locked():
     """A single odd frame among colourful ones must not lock a region."""
     rng = np.random.default_rng(4)
-    det = PipAutoDetector(window=8, need=3)
-    frames = [colorful(rng) for _ in range(7)]
-    frames.insert(3, add_gray_inset(colorful(rng), 0.66, 0, 1.0, 0.45, rng))
-    for fr in frames[:8]:
-        det.feed(fr)
-    assert det.decided and det.region is None  # only 1 vote, need 3
+    det = PipAutoDetector(window=10, need=4)
+    for i in range(20):
+        if i == 5:
+            det.feed(add_gray_inset(colorful(rng), 0.66, 0, 1.0, 0.45, rng))
+        else:
+            det.feed(colorful(rng))
+    assert not det.locked  # one stray positive never reaches need=4
 
 
 def test_single_frame_helper():

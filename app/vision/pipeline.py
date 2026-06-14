@@ -75,6 +75,7 @@ class Pipeline:
         self._pip = PipAutoDetector() if (cfg.pip_autodetect and not self.ignore) else None
         self.pip_layout: str | None = None
         self._pip_applied = self._pip is None
+        self._pip_frame_ctr = 0
         self.frame_w = 0  # dimensions of the (possibly cropped) analyzed frame
         self.frame_h = 0
 
@@ -187,8 +188,12 @@ class Pipeline:
                 frame = self._apply_roi(frame)
                 h, w = frame.shape[:2]
                 self.frame_w, self.frame_h = w, h
-                if self._pip is not None and self._pip.feed(frame) and not self._pip_applied:
-                    self._apply_pip_result()
+                # Sample for an IR inset a few times a second (it may appear
+                # partway into a feed); apply once a layout locks.
+                if self._pip is not None and not self._pip_applied:
+                    self._pip_frame_ctr += 1
+                    if self._pip_frame_ctr % 8 == 0 and self._pip.feed(frame):
+                        self._apply_pip_result()
                 scale = w / float(FLOW_W)
                 small_gray = cv2.cvtColor(
                     cv2.resize(frame, (FLOW_W, max(2, int(h / scale)))), cv2.COLOR_BGR2GRAY

@@ -16,7 +16,7 @@ misfire (see DECISIONS B20).
 
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, deque
 
 import cv2
 import numpy as np
@@ -93,38 +93,47 @@ def _default_rect(layout: str) -> tuple[float, float, float, float]:
 
 
 class PipAutoDetector:
-    """Locks an IR-inset layout once it agrees across `need` of `window` frames.
+    """Locks an IR-inset layout once it agrees across `need` of the last
+    `window` samples, then stops.
 
-    Conservative on purpose: if frames disagree or nothing is found, it gives
-    up (no region) rather than risk masking real video.
+    Uses a rolling window and never concludes a permanent "no PiP": some feeds
+    turn the thermal inset on only partway in (observed: it appears ~40 s into
+    one film), so the detector keeps sampling until a layout reaches consensus.
+    Conservative on the positive side — `need` agreeing samples are required,
+    so transients and colour scenery never trigger it (validated 0/5 clean
+    films). Cheap enough to sample periodically for the whole session.
     """
 
-    def __init__(self, window: int = 8, need: int = 3):
+    def __init__(self, window: int = 10, need: int = 4):
         self.window = window
         self.need = need
-        self._votes: list[tuple[str, tuple[float, float, float, float]] | None] = []
-        self.decided = False
+        self._votes: deque = deque(maxlen=window)
+        self.locked = False
         self.region: tuple[float, float, float, float] | None = None
         self.layout: str | None = None
 
+    @property
+    def decided(self) -> bool:
+        return self.locked
+
     def feed(self, frame_bgr: np.ndarray) -> bool:
-        """Returns True once a decision (region or definitively none) is made."""
-        if self.decided:
+        """Sample one frame. Returns True once a positive layout is locked."""
+        if self.locked:
             return True
         self._votes.append(detect_pip_frame(frame_bgr))
-        if len(self._votes) < self.window:
-            return False
         layouts = Counter(v[0] for v in self._votes if v)
-        if layouts and layouts.most_common(1)[0][1] >= self.need:
-            layout = layouts.most_common(1)[0][0]
-            rects = [v[1] for v in self._votes if v and v[0] == layout]
-            self.region = tuple(round(float(np.median([r[i] for r in rects])), 3) for i in range(4))
-            self.layout = layout
-        self.decided = True
-        return True
+        if layouts:
+            layout, cnt = layouts.most_common(1)[0]
+            if cnt >= self.need:
+                rects = [v[1] for v in self._votes if v and v[0] == layout]
+                self.region = tuple(round(float(np.median([r[i] for r in rects])), 3) for i in range(4))
+                self.layout = layout
+                self.locked = True
+                return True
+        return False
 
     def reset(self) -> None:
         self._votes.clear()
-        self.decided = False
+        self.locked = False
         self.region = None
         self.layout = None

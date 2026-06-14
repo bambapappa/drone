@@ -28,6 +28,7 @@ from app.core.config import Settings
 from app.vision.behavior import BehaviorAnalyzer, BehaviorConfig
 from app.vision.broadcast import Broadcaster
 from app.vision.flow import BoxFilter, GlobalMotion, local_box_flow
+from app.vision.pip import PipAutoDetector
 from app.vision.registry import PersonRegistry, appearance_hist
 from app.vision.situation import SituationAnalyzer
 from app.vision.sources import VideoSource
@@ -70,6 +71,10 @@ class Pipeline:
         self.source_name = source
         self.roi = cfg.roi_tuple()  # crop applied to every frame before analysis
         self.ignore = cfg.ignore_list()  # regions excluded from analysis (PiP IR insets)
+        # Auto-detect an IR inset only when the operator hasn't pinned regions.
+        self._pip = PipAutoDetector() if (cfg.pip_autodetect and not self.ignore) else None
+        self.pip_layout: str | None = None
+        self._pip_applied = self._pip is None
         self.frame_w = 0  # dimensions of the (possibly cropped) analyzed frame
         self.frame_h = 0
 
@@ -182,6 +187,8 @@ class Pipeline:
                 frame = self._apply_roi(frame)
                 h, w = frame.shape[:2]
                 self.frame_w, self.frame_h = w, h
+                if self._pip is not None and self._pip.feed(frame) and not self._pip_applied:
+                    self._apply_pip_result()
                 scale = w / float(FLOW_W)
                 small_gray = cv2.cvtColor(
                     cv2.resize(frame, (FLOW_W, max(2, int(h / scale)))), cv2.COLOR_BGR2GRAY
@@ -310,6 +317,14 @@ class Pipeline:
             self._last_threats = res["threats"]
             self._threat_last_t = t
         self._irrational_pids |= res["irrational_pids"]
+
+    def _apply_pip_result(self) -> None:
+        """Adopt the auto-detected IR inset (if any) as an ignore region."""
+        self._pip_applied = True
+        if self._pip is None or self._pip.region is None:
+            return
+        self.ignore = [*self.ignore, self._pip.region]
+        self.pip_layout = self._pip.layout
 
     def _in_ignore(self, nx: float, ny: float) -> bool:
         for rx, ry, rw, rh in self.ignore:
@@ -606,4 +621,5 @@ class PipelineManager:
             "detect_fps": round(p.detect_fps, 1),
             "unique_total": p.registry.unique_total,
             "clients": self.broadcaster.client_count,
+            "pip_layout": p.pip_layout,  # auto-detected IR inset, or None
         }

@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     # insets: detections and smoke/fire analysis inside are discarded while
     # the video still shows the full frame. Ex: IGNORE_REGIONS=0.66,0,0.34,0.44
     ignore_regions: str = ""
+    # Auto-detect an IR/thermal corner inset or 50% split and exclude it.
+    # Only acts when confident (grayscale region, stable across frames); a
+    # manual IGNORE_REGIONS always wins and disables auto-detect.
+    pip_autodetect: bool = True
 
     # --- Detection model ---
     model: str = "yolo11n.pt"  # any Ultralytics .pt; class names are introspected

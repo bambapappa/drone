@@ -97,6 +97,7 @@ class Pipeline:
             flow_ema=cfg.smoke_flow_ema,
             base_margin=cfg.base_margin,
             base_hysteresis=cfg.base_hysteresis,
+            fire_require_smoke=cfg.fire_require_smoke,
         )
 
         self._tracks: dict[int, DisplayTrack] = {}

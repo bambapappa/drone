@@ -68,6 +68,9 @@ class Settings(BaseSettings):
     hazard_min_area: float = 0.004  # fraction of frame area
     hazard_hold_s: float = 2.0
     smoke_flow_ema: float = 0.15
+    # Require co-located moving smoke before flagging fire (rejects red roofs,
+    # sunsets etc.). Disable only if your footage has fire without visible smoke.
+    fire_require_smoke: bool = True
     base_margin: float = 0.08  # keep suggestion this far from frame edge
     base_hysteresis: float = 0.15  # move marker only if target shifts more than this
 

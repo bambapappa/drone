@@ -89,12 +89,20 @@ class SituationAnalyzer:
         flow_ema: float = 0.15,
         base_margin: float = 0.08,
         base_hysteresis: float = 0.15,
+        fire_require_smoke: bool = True,
+        fire_smoke_radius: float = 0.28,
+        fire_smoke_min_frac: float = 0.02,
     ):
         self.min_area = min_area
         self.hold_s = hold_s
         self.flow_ema = flow_ema
         self.base_margin = base_margin
         self.base_hysteresis = base_hysteresis
+        # Real fire smokes; a red-tile roof does not. Only accept a fire blob
+        # when moving smoke is present in its neighbourhood (DECISIONS B18).
+        self.fire_require_smoke = fire_require_smoke
+        self.fire_smoke_radius = fire_smoke_radius
+        self.fire_smoke_min_frac = fire_smoke_min_frac
         self.state = SituationState()
         self._prev_gray: np.ndarray | None = None
         self._fire_since: float | None = None
@@ -122,7 +130,10 @@ class SituationAnalyzer:
         fm = fire_mask(small)
         sm = smoke_mask(small, self._prev_gray, gray)
 
-        self.state.fire = self._hold("fire", _largest_blob(fm), t, self.state.fire, "_fire_since")
+        fire_blob = _largest_blob(fm)
+        if fire_blob is not None and self.fire_require_smoke and not self._smoke_near(sm, fire_blob[0]):
+            fire_blob = None  # red roofs / sunset etc. — saturated colour but no smoke
+        self.state.fire = self._hold("fire", fire_blob, t, self.state.fire, "_fire_since")
         self.state.smoke = self._hold("smoke", _largest_blob(sm), t, self.state.smoke, "_smoke_since")
 
         # Smoke drift: median Farneback flow inside the smoke mask, EMA-smoothed.
@@ -137,6 +148,19 @@ class SituationAnalyzer:
         self._suggest_base(danger_norm)
         self._prev_gray = gray
         return self.state
+
+    def _smoke_near(self, sm: np.ndarray, fire_pos: tuple[float, float]) -> bool:
+        """True if moving smoke occupies a meaningful fraction of the window
+        around the fire blob — smoke rises from/around real flames."""
+        h, w = sm.shape
+        r = int(self.fire_smoke_radius * max(w, h))
+        cx, cy = int(fire_pos[0] * w), int(fire_pos[1] * h)
+        x0, y0 = max(0, cx - r), max(0, cy - r)
+        x1, y1 = min(w, cx + r), min(h, cy + r)
+        window = sm[y0:y1, x0:x1]
+        if window.size == 0:
+            return False
+        return float(window.mean()) >= self.fire_smoke_min_frac
 
     def _hold(self, kind: str, blob, t: float, prev: Hazard | None, since_attr: str) -> Hazard | None:
         """Require min area sustained for hold_s before reporting; keep last

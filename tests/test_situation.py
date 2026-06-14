@@ -1,5 +1,6 @@
 """Situation analyzer: fire/smoke heuristics and base suggestion."""
 
+import cv2
 import numpy as np
 
 from app.vision.situation import SituationAnalyzer, fire_mask
@@ -18,17 +19,50 @@ def test_fire_mask_hits_fire_colors():
     assert fire_mask(frame).mean() < 0.05
 
 
-def test_fire_reported_after_hold():
+def fire_smoke_frame(rng, w=320, h=180):
+    """Dark scene with a red fire patch and a turbulent gray smoke plume above
+    it. Smoke is re-randomized each frame (low saturation, mid value) so it
+    reads as moving — like real smoke, not a rigid block."""
+    f = solid((40, 40, 40), w, h)
+    f[120:150, 150:200] = (20, 60, 230)  # fire patch (BGR red/orange)
+    # Coarse gray blocks (survive 2:1 downscale), re-randomized each frame so
+    # the plume reads as moving — like real turbulent smoke.
+    blocks = rng.integers(110, 190, size=(14, 11, 1), dtype=np.uint8)
+    plume = cv2.resize(blocks, (55, 70), interpolation=cv2.INTER_NEAREST)
+    f[40:110, 150:205] = np.repeat(plume[:, :, None], 3, axis=2)
+    return f
+
+
+def test_fire_with_smoke_reported_after_hold():
     an = SituationAnalyzer(min_area=0.004, hold_s=1.0)
-    frame = solid((40, 40, 40))
-    frame[40:90, 100:180] = (20, 60, 230)  # fire patch
-    t = 0.0
-    state = None
-    for i in range(12):
-        state = an.update(frame, t, None)
+    rng = np.random.default_rng(0)
+    t, state = 0.0, None
+    for _ in range(12):
+        state = an.update(fire_smoke_frame(rng), t, None)
         t += 0.2
     assert state.fire is not None
-    assert 0.2 < state.fire.pos[0] < 0.7
+    assert 0.2 < state.fire.pos[0] < 0.8
+
+
+def test_red_roof_without_smoke_not_fire():
+    """A saturated red region with no smoke nearby (red tile roof) is rejected."""
+    an = SituationAnalyzer(min_area=0.004, hold_s=1.0)
+    frame = solid((40, 40, 40))
+    frame[40:90, 100:180] = (20, 60, 230)  # red roof, no smoke anywhere
+    state = None
+    for i in range(12):
+        state = an.update(frame, i * 0.2, None)
+    assert state.fire is None
+
+
+def test_fire_require_smoke_can_be_disabled():
+    an = SituationAnalyzer(min_area=0.004, hold_s=1.0, fire_require_smoke=False)
+    frame = solid((40, 40, 40))
+    frame[40:90, 100:180] = (20, 60, 230)
+    state = None
+    for i in range(12):
+        state = an.update(frame, i * 0.2, None)
+    assert state.fire is not None
 
 
 def test_no_fire_on_neutral_frame():

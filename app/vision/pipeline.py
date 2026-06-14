@@ -368,6 +368,7 @@ class Pipeline:
                 iou=self.cfg.iou,
                 human_classes=self.cfg.human_class_set(),
                 threat_classes=self.cfg.threat_class_set(),
+                tiles=self.cfg.tiles,
             )
         except Exception as e:
             self.status = "error"

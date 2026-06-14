@@ -75,6 +75,15 @@ FastAPI ── WebSocket /ws/stream ──► webbklient (canvas)
 - **Beslut:** Hotbilden lyfts ur PoC 1 på beställarens begäran — fokus läggs på persondetektering och följsamhet. Backend-rörledningen (klassbaserad flaggning via `THREAT_CLASSES`) behålls men är avstängd som standard (tom klasslista) och GUI-ytan (hotchip, larmbanner, hotlista) är borttagen.
 - **Återaktivering senare:** sätt `THREAT_CLASSES=knife` (COCO-modell) eller byt till specialmodell för vapen/farligt gods; GUI-lagret återinförs då. Öppen-vokabulär (YOLO-World) är fortsatt PoC 2-kandidat.
 
+### B17. Tiled inferens (NxN) för små människor på hög höjd (2026-06-14)
+- **Problem (uppmätt i B16):** osedda människor på ~10 px är detektorns fysiska gräns; en enda nedskalad inferensbild tappar dem.
+- **Val:** `TILES=N` kör YOLO på N×N överlappande rutor (15 % overlap, kantrutor snäpper exakt till bildkant — `app/vision/tiling.py`), slår ihop med global NMS. Tiles + `model.track()` går inte ihop, så vid tiling drivs BoT-SORT manuellt (`Detector._track_tiled`); apparens-ReID i spåraren stängs av (saknar feature-stöd på hopslagna rutor) — personregistrets utseende-re-ID (B4) täcker det i stället.
+- **Mätning (brandklippet, VisDrone-s @640):** enkelpass 2,1 personer/ruta → **2×2 tiles 11,1/ruta**, alla provrutor fick träff. Kostnad ~2 Hz detektion på 4-kärnig sandbox-CPU (≈2,4× billigare än motsvarande recall via en enda 1280-bild); render-tråden håller 24 fps oförändrat via optiskt flöde. Verifierat live utan krasch: 24 fps, unika ackumuleras stabilt, 0 fel.
+- **Rekommendation:** GPU/MPS (användarens M5) eller kraftig CPU för `TILES=2`; default av (`TILES=1`) så svaga maskiner inte drabbas oväntat.
+
+### B18. Känt falsklarm: eldheuristiken triggar på röda taktegel (öppen punkt)
+- **Observation (brandfilmen):** `fire_mask` (mättat rött/orange) slår ut på svenska tegeltak → falsk "BRAND"-markör. Loggat, ej åtgärdat (person­detektering är prio). Möjlig fix: kräva samtidig rök i närheten, temporal flimmer-signatur, eller tränad eld/rök-segmentering (PoC 2). Tills vidare: `Miljö`-lagret kan togglas av i GUI:t.
+
 ### B8. Leverans till klient: WebSocket med JPEG + metadata per bildruta
 - **Val:** Binärt WS-meddelande per bildruta: `[längd][meta-JSON][JPEG]`. Klienten ritar bilden på canvas och lagren (boxar, ID, spår, status, bas, rök, hot) ovanpå — **togglar är därmed rena klientval** och kräver ingen serveromrendering. Per-klient-kö med längd 1 (äldsta kastas) → en långsam mobil ger sig själv lägre fps men aldrig växande fördröjning.
 - **Förkastat:** (a) Server ritar in grafiken i bilden — omöjliggör per-klient-togglar. (b) HLS/WebRTC + separat metadatakanal — bättre bandbredd men synkdrift mellan video och boxar är exakt det "hopp" som inte får finnas; WebRTC-stacken är också tung för en PoC. Paketering bild+meta atomiskt garanterar perfekt synk.
@@ -145,3 +154,4 @@ Två riktiga filmer (trafikolycka med IR-PiP; lägenhetsbrand med rök, 960×540
 - 2026-06-12: Kodgranskningsrunda (7 vinklar). Åtgärdat: JPEG-kodning hoppas över när inga klienter tittar (analysen fortsätter ackumulera), dött One Euro-filter borttaget, `VideoSource.frame_no` publik. Noterat för PoC 2 (medvetet ej åtgärdat nu): hothållning är global (ej per hottyp/plats), diskontinuitetshantering bör generaliseras bortom filloop (RTSP-glapp), GUI-rendering finns i två varianter (webbklient + snapshot-debugverktyg) som måste hållas i synk.
 - 2026-06-12: VisDrone-hämtskript + ANALYSIS_ROI för IR/split-screen (B15). ROI verifierad end-to-end (beskuren bildstorlek + faropunktskoordinater); full integrationskontroll grön utan ROI (boxhopp 0,042).
 - 2026-06-12: Hotbild utlyft ur PoC 1 (B7). IGNORE_REGIONS för IR-bild-i-bild. Modellutvärdering på två riktiga insatsfilmer → VisDrone@1280 conf 0.2 rekommenderas (B16); registerfixar (pid-dubbletter, unika-inflation) verifierade live: 0 dubbletter, max boxhopp 0,007–0,014 på riktig film.
+- 2026-06-14: Tiled inferens (B17) implementerad och verifierad live (TILES=2: 11,1 vs 2,1 personer/ruta, manuell BoT-SORT, 51 tester gröna). Eldheuristik-falsklarm på tegeltak loggat (B18).

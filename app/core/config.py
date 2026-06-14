@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     model: str = "yolo11n.pt"  # any Ultralytics .pt; class names are introspected
     device: str = "cpu"
     imgsz: int = 640
+    # NxN tiled inference (1 = off). TILES=2 with IMGSZ=640 matches the recall
+    # of IMGSZ=1280 at ~2.4x less compute for tiny people at altitude (B17).
+    tiles: int = 1
     conf: float = 0.30
     iou: float = 0.50
     # Class names treated as humans (covers COCO and VisDrone-style models)
@@ -88,6 +91,13 @@ class Settings(BaseSettings):
         if x + w > 1.0001 or y + h > 1.0001:
             raise ValueError(f"{name} sticker utanför bilden (x+w respektive y+h ≤ 1)")
         return x, y, w, h
+
+    @field_validator("tiles")
+    @classmethod
+    def _validate_tiles(cls, v: int) -> int:
+        if not 1 <= v <= 3:
+            raise ValueError("TILES ska vara 1–3")
+        return v
 
     @field_validator("analysis_roi")
     @classmethod

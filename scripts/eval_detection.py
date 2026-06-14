@@ -38,6 +38,26 @@ def in_ignore(cx, cy, w, h, regions) -> bool:
     return any(rx <= nx <= rx + rw and ry <= ny <= ry + rh for rx, ry, rw, rh in regions)
 
 
+def predict_tiled(model, frame, n, imgsz, conf, hids):
+    """Per-tile prediction merged with global NMS; returns (xyxy, conf) lists.
+
+    Uses the same tiling helpers as the production detector so the eval
+    measures what the pipeline actually does.
+    """
+    from app.vision.tiling import nms_merge, tile_grid
+
+    h, w = frame.shape[:2]
+    boxes, scores = [], []
+    for x0, y0, x1, y1 in tile_grid(w, h, n):
+        res = model.predict(frame[y0:y1, x0:x1], imgsz=imgsz, conf=conf, classes=hids, verbose=False)[0]
+        for b in res.boxes or []:
+            bx0, by0, bx1, by1 = b.xyxy[0].tolist()
+            boxes.append([bx0 + x0, by0 + y0, bx1 + x0, by1 + y0])
+            scores.append(float(b.conf[0]))
+    keep = nms_merge(boxes, scores, [0] * len(boxes))
+    return [boxes[i] for i in keep], [scores[i] for i in keep]
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("video")
@@ -46,6 +66,7 @@ def main() -> None:
     ap.add_argument("--conf", type=float, default=0.30)
     ap.add_argument("--samples", type=int, default=30)
     ap.add_argument("--ignore", default="", help="';'-separerade x,y,w,h att exkludera")
+    ap.add_argument("--tiles", type=int, default=1, help="NxN tiled inferens (1 = av)")
     args = ap.parse_args()
 
     from ultralytics import YOLO
@@ -66,13 +87,17 @@ def main() -> None:
             model.predict(frames[0], imgsz=imgsz, verbose=False)  # warmup
             counts, confs, t0 = [], [], time.perf_counter()
             for fr in frames:
-                res = model.predict(fr, imgsz=imgsz, conf=args.conf, classes=hids, verbose=False)[0]
+                if args.tiles > 1:
+                    bxs, scs = predict_tiled(model, fr, args.tiles, imgsz, args.conf, hids)
+                else:
+                    res = model.predict(fr, imgsz=imgsz, conf=args.conf, classes=hids, verbose=False)[0]
+                    bxs = [b.xyxy[0].tolist() for b in res.boxes or []]
+                    scs = [float(b.conf[0]) for b in res.boxes or []]
                 n_pers = 0
-                for b in res.boxes or []:
-                    x0, y0, x1, y1 = b.xyxy[0].tolist()
+                for (x0, y0, x1, y1), sc in zip(bxs, scs):
                     if not in_ignore((x0 + x1) / 2, (y0 + y1) / 2, w, h, regions):
                         n_pers += 1
-                        confs.append(float(b.conf[0]))
+                        confs.append(sc)
                 counts.append(n_pers)
             ms = (time.perf_counter() - t0) * 1000 / len(frames)
             mean = sum(counts) / len(counts)

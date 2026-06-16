@@ -1,8 +1,16 @@
-.PHONY: install dev test lint build up down deploy demo-video check
+.PHONY: venv install dev test lint build up down deploy demo-video check serve
 
+# Skapa en isolerad virtuell miljö (rekommenderas på Mac/Linux).
+# Aktivera den sedan med:  source .venv/bin/activate
+venv:
+	python3 -m venv .venv
+	. .venv/bin/activate && pip install --upgrade pip && pip install -e ".[dev]"
+	@echo "Klart. Aktivera med: source .venv/bin/activate"
+
+# Installerar i den AKTIVA miljön (venv eller container). Inget --system:
+# på Mac kräver systemets Python en venv (annars 'externally-managed' fel).
 install:
-	uv pip install --system -r pyproject.toml
-	uv pip install --system ruff pytest pytest-asyncio
+	pip install -e ".[dev]"
 
 dev:
 	uvicorn app.main:app --reload --host 0.0.0.0 --port 8000

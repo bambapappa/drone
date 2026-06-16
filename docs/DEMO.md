@@ -15,14 +15,21 @@ IR-maskning) är grädde på moset.
 ```bash
 git clone https://github.com/bambapappa/drone && cd drone
 
-# Python-beroenden (native = snabbast på M5, använder Apple-GPU via MPS)
-pip install uv
-uv pip install --system -r pyproject.toml
-uv pip install --system ruff pytest pytest-asyncio
+# Isolerad virtuell miljö (krävs på macOS — systemets Python är skyddad).
+python3 -m venv .venv
+source .venv/bin/activate                   # gör i varje nytt terminalfönster
+pip install --upgrade pip
+pip install -e ".[dev]"                      # app + beroenden (torch m. MPS) + testverktyg
+#   OBS: citattecknen runt ".[dev]" krävs i zsh (Macs standardskal)
+#   Genväg för raderna ovan:  make venv
 
 # Hämta VisDrone-vikterna (tränade för små människor från drönarhöjd)
 python scripts/fetch_visdrone.py            # -> models/visdrone-yolov8s.pt
 ```
+
+> **Inget `--system`.** Den flaggan är bara till för Docker-imagen/CI. På din
+> Mac installerar du i venv:en ovan. `make serve` hittar `.venv` automatiskt,
+> så du behöver inte aktivera den för att starta servern.
 
 Lägg dina filmer i `videos/`. Saknas film helt finns ett syntetiskt testklipp:
 `python scripts/make_demo_video.py` skriver `videos/demo.mp4`.

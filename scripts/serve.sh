@@ -10,13 +10,17 @@ cd "$(dirname "$0")/.."
 PORT="${PORT:-8000}"
 [ -n "${1:-}" ] && export SOURCE="$1"
 
+# Use the project venv if it exists, so this works without manual activation.
+PY="python3"
+[ -x ".venv/bin/python" ] && PY=".venv/bin/python"
+
 # 1. Stop any previous instance on this port (does not touch files/context).
 pkill -9 -f "uvicorn app.main" 2>/dev/null || true
 for _ in 1 2 3 4 5; do ss -ltn 2>/dev/null | grep -q ":${PORT}\b" || break; sleep 1; done
 
 # 2. Start fresh, unbuffered so logs are truthful.
 export PYTHONUNBUFFERED=1
-nohup python3 -m uvicorn app.main:app --host 0.0.0.0 --port "${PORT}" --no-access-log \
+nohup "${PY}" -m uvicorn app.main:app --host 0.0.0.0 --port "${PORT}" --no-access-log \
   > /tmp/drone-serve.log 2>&1 &
 echo "startar (pid $!), logg: /tmp/drone-serve.log"
 

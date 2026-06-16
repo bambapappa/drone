@@ -74,7 +74,8 @@ Vilken Ultralytics-`.pt` som helst fungerar — klassnamnen introspekteras.
 ## Utveckling
 
 ```bash
-make install        # beroenden (uv)
+make venv           # skapar .venv och installerar allt (Mac/Linux)
+source .venv/bin/activate
 make dev            # uvicorn med reload på :8000
 make test           # enhetstester (ML-fritt, snabbt, deterministiskt)
 make lint           # ruff check + format

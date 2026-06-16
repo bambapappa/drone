@@ -50,6 +50,7 @@ async function loadBundle(name) {
     video.load();
     canvas.width = meta.wh[0]; canvas.height = meta.wh[1];
     document.getElementById("vwrap").style.aspectRatio = `${meta.wh[0]} / ${meta.wh[1]}`;
+    showConfig(meta);
     renderEvents();
     overlayMsg.classList.add("hidden");
     history.replaceState(null, "", `?a=${encodeURIComponent(name)}`);
@@ -57,6 +58,15 @@ async function loadBundle(name) {
     overlayMsg.textContent = "Kunde inte ladda analysen.";
     overlayMsg.classList.remove("hidden");
   }
+}
+
+function showConfig(meta) {
+  const bar = document.getElementById("cfg-bar");
+  const tiles = meta.tiles > 1 ? ` · tiles ${meta.tiles}×${meta.tiles}` : "";
+  const stride = meta.stride > 1 ? ` · var ${meta.stride}:e ruta` : "";
+  bar.textContent =
+    `Modell: ${meta.model} · imgsz ${meta.imgsz} · conf ${meta.conf}${tiles}` +
+    ` · ${meta.frames_analyzed}/${meta.frames_total} rutor @ ${meta.fps} fps${stride}`;
 }
 
 /* ---------- frame lookup ---------- */

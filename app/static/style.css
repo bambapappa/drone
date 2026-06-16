@@ -176,10 +176,15 @@ body.player #vwrap #view {
 }
 body.player #vwrap #view { pointer-events: none; }
 
+#cfg-bar { padding: 6px 10px; background: var(--bg); border-bottom: 1px solid #1d2630; }
+#cfg-bar:empty { display: none; }
+
 #transport {
   display: flex; align-items: center; gap: 8px;
   padding: 8px 10px; background: var(--bg2);
 }
+#cfg-bar { padding: 6px 10px; margin: 0; background: var(--bg); border-bottom: 1px solid #1d2630; }
+#cfg-bar:empty { display: none; }
 #transport #scrub { flex: 1; min-width: 80px; cursor: pointer; accent-color: var(--accent); }
 #transport select { flex: 0 0 auto; min-width: 0; padding: 6px 8px; }
 #transport .chip { padding: 7px 11px; }

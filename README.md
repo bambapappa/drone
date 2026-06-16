@@ -9,8 +9,9 @@ Byggt för att bete sig likadant på inspelad övningsfilm som på en riktig
 drönarström — samma kodväg, inga per-video-inställningar, förutsägbart på
 osedd film.
 
-📖 **[Demo-körschema](docs/DEMO.md)** · **[Konfiguration](docs/CONFIG.md)** ·
-**[Arkitektur](docs/ARCHITECTURE.md)** · **[Designbeslut](DECISIONS.md)**
+📖 **[Demo-körschema](docs/DEMO.md)** · **[Efteranalys](docs/OFFLINE.md)** ·
+**[Konfiguration](docs/CONFIG.md)** · **[Arkitektur](docs/ARCHITECTURE.md)** ·
+**[Designbeslut](DECISIONS.md)**
 
 ---
 
@@ -41,6 +42,11 @@ För skarp körning, se **[docs/DEMO.md](docs/DEMO.md)** — i korthet: VisDrone
   korridor till bildkant) och **vändyta**, bort från rökens medvind.
 - **Värmekamera** — IR-bild-i-bild (valfritt hörn) eller 50%-split känns igen
   **automatiskt** och exkluderas/beskärs så att folk inte dubbelräknas.
+- **Efteranalys (icke-realtid)** — `scripts/analyze_offline.py` kör detektion på
+  *varje* ruta och bygger en bunt som spelas upp på **`/player`** med
+  spola fram/tillbaka, stega ruta-för-ruta och klickbar händelse­tidslinje.
+  Rätt yta för att granska vad modellen missade och om besluten var rätt.
+  Se **[docs/OFFLINE.md](docs/OFFLINE.md)**.
 
 *(Hotdetektion — vapen/farligt gods — är utlyft ur PoC 1; rörledningen finns kvar
 bakom `THREAT_CLASSES`.)*

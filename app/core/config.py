@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     source: str = ""
     video_dir: str = "videos"
     loop: bool = True  # restart file sources when they end
+    # Where offline-analysis bundles are written/served (scripts/analyze_offline.py).
+    analyses_dir: str = "analyses"
     # Crop frames to this region before any analysis: "x,y,w,h" normalized 0..1.
     # For split-screen IR/visual footage: select the visual half so people
     # aren't double-counted. Empty = full frame.

@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="sv">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0c1014">
+  <title>Drönare · Efteranalys</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="player">
+  <header id="topbar">
+    <div id="brand">EFTER<span>ANALYS</span></div>
+    <div class="row">
+      <select id="analysis-select" title="Välj analys"></select>
+      <a class="chip" href="/">↩ Live</a>
+    </div>
+  </header>
+
+  <main>
+    <div id="stage">
+      <div id="vwrap">
+        <video id="video" playsinline preload="auto"></video>
+        <canvas id="view"></canvas>
+      </div>
+      <div id="overlay-msg">Välj eller skapa en analys nedan.</div>
+    </div>
+
+    <div id="transport">
+      <button class="chip" id="btn-rev" title="Spela baklänges">⏪</button>
+      <button class="chip" id="btn-step-back" title="Ett steg bakåt">⟨</button>
+      <button class="chip on" id="btn-play" title="Spela / pausa">▶</button>
+      <button class="chip" id="btn-step-fwd" title="Ett steg framåt">⟩</button>
+      <input type="range" id="scrub" min="0" max="1000" value="0" step="1">
+      <span id="timecode" class="dim small">0:00 / 0:00</span>
+      <select id="speed" title="Hastighet">
+        <option value="0.25">0.25×</option>
+        <option value="0.5">0.5×</option>
+        <option value="1" selected>1×</option>
+        <option value="2">2×</option>
+        <option value="4">4×</option>
+      </select>
+    </div>
+
+    <nav id="toggles">
+      <button class="chip on" data-layer="boxes">Boxar</button>
+      <button class="chip on" data-layer="ids">ID</button>
+      <button class="chip" data-layer="trails">Spår</button>
+      <button class="chip on" data-layer="status">Beteende</button>
+      <button class="chip on" data-layer="hazards">Miljö</button>
+      <button class="chip on" data-layer="base">Bas</button>
+      <button class="chip" id="btn-newpanel">＋ Ny analys</button>
+    </nav>
+
+    <section id="panel">
+      <div class="card" id="new-card">
+        <h3>Skapa analys</h3>
+        <div class="row">
+          <select id="new-video"></select>
+          <label class="dim small">var N:te ruta
+            <input id="new-stride" type="number" min="1" max="10" value="1" style="width:3em">
+          </label>
+          <button id="btn-run">Kör analys</button>
+        </div>
+        <div id="run-status" class="dim small"></div>
+      </div>
+      <div class="card">
+        <h3>Lägesbild <span id="cur-stats" class="dim small"></span></h3>
+        <ul id="situation-list"><li class="dim">—</li></ul>
+      </div>
+      <div class="card">
+        <h3>Händelser <span id="ev-count" class="dim small"></span></h3>
+        <ul id="event-list" class="events"><li class="dim">—</li></ul>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/overlay.js"></script>
+  <script src="/static/player.js"></script>
+</body>
+</html>

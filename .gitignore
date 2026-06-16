@@ -21,6 +21,9 @@ dist/
 # Video assets & model weights
 videos/*
 !videos/.gitkeep
+
+# Offline-analysis bundles
+analyses/
 *.pt
 runs/
 models/*

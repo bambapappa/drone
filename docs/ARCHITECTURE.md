@@ -56,6 +56,7 @@ bara *korrigerar* mot detektionen när den blir klar — mjukt, aldrig hack/hopp
 | `behavior.py` | `BehaviorAnalyzer`: STILLA / MOT FARA i kamerastabiliserade, höjd­normaliserade koordinater. |
 | `situation.py` | Rök/eld-heuristik, rökdrift, basförslag (utväg/vändyta, undvik medvind). |
 | `pip.py` | `PipAutoDetector`: hittar IR-bild-i-bild (hörn) eller 50% split via gråskale-signal. |
+| `offline.py` | `OfflineAnalyzer`: icke-realtid, detektion på varje ruta → bunt; `EventTracker` bygger händelse­tidslinjen. |
 | `broadcast.py` | `Broadcaster`: trådsäker fan-out till WS-klienter. |
 
 ## App & API (`app/`)
@@ -66,7 +67,8 @@ bara *korrigerar* mot detektionen när den blir klar — mjukt, aldrig hack/hopp
 | `routers/stream.py` | `/ws/stream` (binär ström) + `/api/*` (källa, fara, status, uppladdning). |
 | `routers/health.py` | `/health`. |
 | `core/config.py` | Alla inställningar (env/`.env`). Se [CONFIG.md](CONFIG.md). |
-| `static/` | Webbklient: `index.html`, `app.js` (canvas + lager + togglar), `style.css` (mobile-first). |
+| `static/` | Webbklienter: `index.html`+`app.js` (live), `player.html`+`player.js` (efteranalys), `overlay.js` (delad renderare för båda), `style.css` (mobile-first). |
+| `routers/stream.py` | … + `/api/analys*` + `/api/analyze` (offline-buntar, bakgrundskörning). `/player` serveras från `main.py`. |
 
 ## Metadata-paketet (server → klient)
 
@@ -82,6 +84,7 @@ kräver ingen serveromrendering.
 |---|---|
 | `serve.sh` | Robust server-(om)start (`make serve`). |
 | `make_demo_video.py` | Syntetiskt testklipp (panorering + eld/rök). |
+| `analyze_offline.py` | Icke-realtidsanalys: detektion på varje ruta → bunt för spelaren (`/player`). |
 | `eval_detection.py` | Jämför modeller/upplösningar/tiling på film (recall-mätning). |
 | `fetch_visdrone.py` | Hämtar VisDrone-vikter till `models/`. |
 | `snapshot.py` | Annoterad stillbild via WS utan webbläsare (felsökning/SSH). |

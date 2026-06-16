@@ -37,3 +37,8 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 @app.get("/", include_in_schema=False)
 async def index():
     return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/player", include_in_schema=False)
+async def player():
+    return FileResponse(STATIC_DIR / "player.html")

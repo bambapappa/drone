@@ -237,23 +237,23 @@ class OfflineOrchestrator:
         # tracker YAML (not the git-tracked file).
         tracker_yaml_path = self._configure_track_buffer()
 
-        detector = Detector(
-            model_path=self.config.model,
-            device=self.config.device,
-            imgsz=self.config.imgsz,
-            conf=self.config.conf,
-            iou=self.config.iou,
-            human_classes=self.config.human_classes,
-            threat_classes=self.config.threat_classes,
-            tiles=self.config.tiles,
-            tracker_yaml=tracker_yaml_path,
-        )
-
-        total_frames = self.meta.total_frames
-        processed = 0
-        t_start = _time.monotonic()
-
         try:
+            detector = Detector(
+                model_path=self.config.model,
+                device=self.config.device,
+                imgsz=self.config.imgsz,
+                conf=self.config.conf,
+                iou=self.config.iou,
+                human_classes=self.config.human_classes,
+                threat_classes=self.config.threat_classes,
+                tiles=self.config.tiles,
+                tracker_yaml=tracker_yaml_path,
+            )
+
+            total_frames = self.meta.total_frames
+            processed = 0
+            t_start = _time.monotonic()
+
             for frame_no in range(start_frame, total_frames):
                 frame = frame_store.read()
                 if frame is None:

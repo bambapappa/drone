@@ -1,8 +1,11 @@
 """Video file ingestion: frame-accurate PTS index, video hash, PiP detection.
 
-Builds the canonical index of a video file: frame_no ↔ PTS ↔ byte-safe seek
-point. Does one full decode pass at open time; subsequent random access uses
-the index rather than trusting codec seeking on B-frame-heavy files.
+Builds the canonical index of a video file: frame_no ↔ PTS. Does one full
+decode pass at open time to record each frame's PTS and the true decodable
+frame count; subsequent random access re-seeks by frame number (OpenCV's
+CAP_PROP_POS_FRAMES) but is bounds-checked against this index rather than
+trusting a container-reported frame count, which can be wrong on
+B-frame-heavy or variable-frame-rate files.
 
 Also computes a video hash for provenance, extracts fps/resolution, and runs
 PipAutoDetector over a sample to lock the IR-PiP layout for the whole file.
@@ -11,7 +14,7 @@ PipAutoDetector over a sample to lock the IR-PiP layout for the whole file.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import cv2
@@ -31,14 +34,22 @@ class VideoMeta:
     pip_layout: str | None = None
     pip_region: tuple[float, float, float, float] | None = None
     active_roi: tuple[float, float, float, float] | None = None
+    # frame_no -> pts_ms, built once at ingest; carried so later passes can
+    # bounds-check random access (e.g. resume) without re-decoding the video.
+    pts_index: list[tuple[int, float]] = field(default_factory=list)
 
 
 class FrameStore:
     """Sequential iterator + random access by frame index.
 
-    Uses the PTS index built at ingest time; does NOT trust codec seeking
-    on B-frame-heavy files. The index maps frame_no → (seek_pos, pts_ms).
-    Sequential reads use read(); random access uses seek_to(frame_no).
+    Uses the PTS index built at ingest time to bounds-check random access:
+    the index maps frame_no → pts_ms, and its length is the number of frames
+    OpenCV could actually decode, which can be lower than what the container
+    reports. Seeking itself is OpenCV's CAP_PROP_POS_FRAMES (frame-number
+    based, not byte-accurate) — the index guarantees the target frame was
+    proven decodable, it does not make the seek itself frame-exact on
+    B-frame-heavy files. Sequential reads use read(); random access uses
+    seek_to(frame_no).
 
     After a seek_to(), the tracker and all analysis state must be reset —
     this is the caller's responsibility. For the offline tool, random access
@@ -51,7 +62,7 @@ class FrameStore:
         self.meta = meta
         self._cap: cv2.VideoCapture | None = None
         self._frame_no = 0
-        self._pts_idx: list[tuple[int, float]] = []  # [(byte_pos, pts_ms), ...]
+        self._pts_idx: list[tuple[int, float]] = []  # [(frame_no, pts_ms), ...]
 
     def _open(self) -> None:
         if self._cap is not None:
@@ -70,13 +81,14 @@ class FrameStore:
         return self._frame_no
 
     def seek_to(self, frame_no: int) -> bool:
-        """Seek to a specific frame using the stored byte position.
-        Returns True on success. After a seek, the next read() returns
-        the frame at frame_no."""
+        """Seek to a specific frame by frame number.
+
+        Bounds-checked against the PTS index built at ingest time (not the
+        container's possibly-wrong frame count). Returns True on success.
+        After a seek, the next read() returns the frame at frame_no."""
         if frame_no < 0 or frame_no >= len(self._pts_idx):
             return False
         self._open()
-        byte_pos, _ = self._pts_idx[frame_no]
         self._cap.set(cv2.CAP_PROP_POS_FRAMES, frame_no)
         self._frame_no = frame_no
         return True
@@ -117,17 +129,19 @@ def compute_video_hash(video_path: str) -> str:
 
 
 def build_pts_index(video_path: str) -> tuple[list[tuple[int, float]], float, int, int, int]:
-    """Full decode pass: builds frame_no → (byte_pos, pts_ms) index.
+    """Full decode pass: builds a frame_no → pts_ms index.
 
     Returns (index, fps, width, height, total_frames).
 
-    The index maps frame_no to a byte-safe seek point and the PTS in
-    milliseconds. This is the ground truth for every temporal rule in the
-    analysis — t = frame_no / fps (PTS-corrected), not wall-clock time.
+    The index records every frame OpenCV could actually decode and its PTS
+    in milliseconds. This is the ground truth for every temporal rule in the
+    analysis — t = frame_no / fps (PTS-corrected), not wall-clock time — and
+    for bounds-checking later random access, since containers can misreport
+    frame counts on B-frame-heavy or variable-frame-rate files.
 
     One full decode is expensive (~real-time for the video), but it is a
     one-time cost at ingest. Subsequent passes read sequentially from
-    FrameStore, which uses this index for verification.
+    FrameStore, seeking only within the range this index proved decodable.
     """
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -211,6 +225,7 @@ def ingest(video_path: str) -> tuple[VideoMeta, FrameStore]:
         pip_layout=pip_layout,
         pip_region=pip_region,
         active_roi=active_roi,
+        pts_index=index,
     )
 
     store = FrameStore(path, meta)

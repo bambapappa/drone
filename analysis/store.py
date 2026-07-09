@@ -136,17 +136,23 @@ class ArtifactStore:
             return json.load(f)
 
     def get_last_frame(self, pass_name: str) -> int:
-        """Return the last persisted frame_no for the given pass, or -1."""
-        fpath = self.run_dir / "detections" / f"{pass_name}.jsonl"
-        if not fpath.exists():
-            return -1
-        with open(fpath) as f:
-            last_frame = -1
-            for line in f:
-                line = line.strip()
-                if line:
-                    last_frame = json.loads(line).get("frame_no", -1)
-            return last_frame
+        """Return the last persisted frame_no for the given pass, or -1.
+
+        Checks both frames/ and detections/: detections/ only gets a row when
+        a frame produced at least one detection, so a trailing run of
+        empty-detection frames would otherwise look unprocessed on resume.
+        """
+        last_frame = -1
+        for sub in ("frames", "detections"):
+            fpath = self.run_dir / sub / f"{pass_name}.jsonl"
+            if not fpath.exists():
+                continue
+            with open(fpath) as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        last_frame = max(last_frame, json.loads(line).get("frame_no", -1))
+        return last_frame
 
     def close(self) -> None:
         self._write_manifest()

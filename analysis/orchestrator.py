@@ -13,6 +13,7 @@ artifact store.
 
 from __future__ import annotations
 
+import os
 import time as _time
 from dataclasses import dataclass, field
 from typing import Any
@@ -158,14 +159,19 @@ class OfflineOrchestrator:
             return frame
         return np.ascontiguousarray(frame[y0:y1, x0:x1])
 
-    def _configure_track_buffer(self) -> None:
+    def _configure_track_buffer(self) -> str:
         """Re-express BoT-SORT's track_buffer from frame count to seconds.
 
         The live pipeline uses track_buffer: 120 (~8 s at 15 Hz detection).
         For the offline every-frame analysis, this must scale with the video fps:
         track_buffer = max(30, int(fps * track_buffer_s)).
-        This is done by patching the tracker YAML before the detector loads it.
+        Writes a per-run temp copy of the tracker YAML rather than patching the
+        single git-tracked file in place — native runs would otherwise dirty the
+        repo, and two runs on different-fps videos would race on the same file.
+        Returns the temp file path; the caller is responsible for removing it.
         """
+        import tempfile
+
         import yaml
 
         from analysis.detector import TRACKER_YAML
@@ -173,10 +179,11 @@ class OfflineOrchestrator:
         target = int(max(30, self.meta.fps * self.config.track_buffer_s))
         with open(TRACKER_YAML) as f:
             cfg = yaml.safe_load(f)
-        if cfg.get("track_buffer") != target:
-            cfg["track_buffer"] = target
-            with open(TRACKER_YAML, "w") as f:
-                yaml.dump(cfg, f)
+        cfg["track_buffer"] = target
+        fd, path = tempfile.mkstemp(suffix=".yaml", prefix="botsort_drone_")
+        with os.fdopen(fd, "w") as f:
+            yaml.dump(cfg, f)
+        return path
 
     # ---- P1: Detection pass ----
 
@@ -205,23 +212,30 @@ class OfflineOrchestrator:
         # Check for resume
         checkpoint = self.store.load_checkpoint(pass_name)
         start_frame = 0
+        det_id = 0
         if checkpoint is not None:
             last_frame = self.store.get_last_frame(pass_name)
             if last_frame >= 0:
                 start_frame = last_frame + 1
+                det_id = checkpoint.get("det_id", 0)
 
-        # Open the frame store for sequential reading
+        # Open the frame store for sequential reading. The PTS index built at
+        # ingest time is carried on VideoMeta so a resumed run's seek_to() is
+        # bounds-checked against real decodable frames, not an empty index.
         frame_store = FrameStore(self.meta.path, self.meta)
+        frame_store._pts_idx = self.meta.pts_index
         if start_frame > 0:
             if not frame_store.seek_to(start_frame):
                 self.store.record_pass_error(pass_name, f"Could not seek to frame {start_frame}")
+                frame_store.close()
                 return
 
         # Lazy-load the detector (heavy import)
         from analysis.detector import Detector
 
-        # Re-express BoT-SORT track_buffer for video fps
-        self._configure_track_buffer()
+        # Re-express BoT-SORT track_buffer for video fps, via a per-run temp
+        # tracker YAML (not the git-tracked file).
+        tracker_yaml_path = self._configure_track_buffer()
 
         detector = Detector(
             model_path=self.config.model,
@@ -232,77 +246,79 @@ class OfflineOrchestrator:
             human_classes=self.config.human_classes,
             threat_classes=self.config.threat_classes,
             tiles=self.config.tiles,
+            tracker_yaml=tracker_yaml_path,
         )
 
-        det_id = 0
         total_frames = self.meta.total_frames
         processed = 0
         t_start = _time.monotonic()
 
-        for frame_no in range(start_frame, total_frames):
-            frame = frame_store.read()
-            if frame is None:
-                break
+        try:
+            for frame_no in range(start_frame, total_frames):
+                frame = frame_store.read()
+                if frame is None:
+                    break
 
-            # Video time (the timebase swap: wall-clock → video seconds)
-            t = self._video_t(frame_no)
+                # Video time (the timebase swap: wall-clock → video seconds)
+                t = self._video_t(frame_no)
 
-            # Apply ROI if configured (for split-screen IR)
-            frame = self._apply_roi(frame)
-            h, w = frame.shape[:2]
+                # Apply ROI if configured (for split-screen IR)
+                frame = self._apply_roi(frame)
+                h, w = frame.shape[:2]
 
-            # Run detection
-            detections = detector.track(frame)
+                # Run detection
+                detections = detector.track(frame)
 
-            for d in detections:
-                x0, y0, x1, y1 = d.xyxy
-                cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-                if self._in_ignore(cx / w, cy / h):
-                    continue
+                for d in detections:
+                    x0, y0, x1, y1 = d.xyxy
+                    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+                    if self._in_ignore(cx / w, cy / h):
+                        continue
 
-                # Raw per-detection appearance embedding — the cache that
-                # enables global re-ID in Phase 3. Stored per detection, not
-                # EMA-blended, so backward/global association is possible.
-                embedding = None
-                if d.is_human:
-                    hist = appearance_hist(frame, d.xyxy)
-                    if hist is not None:
-                        embedding = hist.tolist()
+                    # Raw per-detection appearance embedding — the cache that
+                    # enables global re-ID in Phase 3. Stored per detection, not
+                    # EMA-blended, so backward/global association is possible.
+                    embedding = None
+                    if d.is_human:
+                        hist = appearance_hist(frame, d.xyxy)
+                        if hist is not None:
+                            embedding = hist.tolist()
 
-                det_record = {
+                    det_record = {
+                        "frame_no": frame_no,
+                        "det_id": det_id,
+                        "xyxy_raw": list(d.xyxy),
+                        "conf": round(d.conf, 4),
+                        "cls": d.cls_name,
+                        "track_id": d.track_id,
+                        "is_human": d.is_human,
+                        "embedding": embedding,
+                    }
+                    self.store.add_detection(pass_name, frame_no, det_id, det_record)
+                    det_id += 1
+
+                # Frame record (minimal for P1 — position data added in P2)
+                # PTS computed from the PTS index if available, else frame_no/fps
+                frame_record = {
                     "frame_no": frame_no,
-                    "det_id": det_id,
-                    "xyxy_raw": list(d.xyxy),
-                    "conf": round(d.conf, 4),
-                    "cls": d.cls_name,
-                    "track_id": d.track_id,
-                    "is_human": d.is_human,
-                    "embedding": embedding,
+                    "pts_ms": round(t * 1000, 3),
                 }
-                self.store.add_detection(pass_name, frame_no, det_id, det_record)
-                det_id += 1
+                self.store.add_frame(pass_name, frame_no, frame_record)
 
-            # Frame record (minimal for P1 — position data added in P2)
-            # PTS computed from the PTS index if available, else frame_no/fps
-            frame_record = {
-                "frame_no": frame_no,
-                "pts_ms": round(t * 1000, 3),
-            }
-            self.store.add_frame(pass_name, frame_no, frame_record)
+                processed += 1
 
-            processed += 1
-
-            # Checkpoint every ~5 seconds of wall time (cheap enough: one JSON write)
-            if processed % max(1, int(self.meta.fps * 5)) == 0:
-                cp = {
-                    "pass": pass_name,
-                    "last_frame": frame_no,
-                    "det_id": det_id,
-                    "processed": processed,
-                }
-                self.store.save_checkpoint(pass_name, cp)
-
-        frame_store.close()
+                # Checkpoint every ~5 seconds of wall time (cheap enough: one JSON write)
+                if processed % max(1, int(self.meta.fps * 5)) == 0:
+                    cp = {
+                        "pass": pass_name,
+                        "last_frame": frame_no,
+                        "det_id": det_id,
+                        "processed": processed,
+                    }
+                    self.store.save_checkpoint(pass_name, cp)
+        finally:
+            frame_store.close()
+            os.unlink(tracker_yaml_path)
 
         elapsed = _time.monotonic() - t_start
         stats = {

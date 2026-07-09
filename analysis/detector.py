@@ -37,6 +37,7 @@ class Detector:
         human_classes: set[str],
         threat_classes: set[str],
         tiles: int = 1,
+        tracker_yaml: str | None = None,
     ):
         from ultralytics import YOLO
 
@@ -46,6 +47,7 @@ class Detector:
         self.conf = conf
         self.iou = iou
         self.tiles = max(1, tiles)
+        self.tracker_yaml = tracker_yaml or TRACKER_YAML
         self._manual_tracker = None
         if self.tiles > 1:
             # Tiled detections can't go through model.track(); drive BoT-SORT
@@ -54,7 +56,7 @@ class Detector:
             from ultralytics.trackers.bot_sort import BOTSORT
             from ultralytics.utils import YAML, IterableSimpleNamespace
 
-            tcfg = YAML.load(TRACKER_YAML)
+            tcfg = YAML.load(self.tracker_yaml)
             tcfg["with_reid"] = False  # no feature ReID on merged tiles; registry handles it
             self._manual_tracker = BOTSORT(IterableSimpleNamespace(**tcfg))
         self.names: dict[int, str] = dict(self.model.names)
@@ -84,7 +86,7 @@ class Detector:
         res = self.model.track(
             frame_bgr,
             persist=True,
-            tracker=TRACKER_YAML,
+            tracker=self.tracker_yaml,
             imgsz=self.imgsz,
             conf=self.conf,
             iou=self.iou,

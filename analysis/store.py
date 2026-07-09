@@ -154,6 +154,25 @@ class ArtifactStore:
                         last_frame = max(last_frame, json.loads(line).get("frame_no", -1))
         return last_frame
 
+    def get_max_det_id(self, pass_name: str) -> int:
+        """Return the highest persisted det_id for the given pass, or -1.
+
+        Read directly from detections/<pass>.jsonl rather than a checkpoint:
+        checkpoints are only written periodically, but detection records are
+        appended immediately per-frame, so this reflects every det_id actually
+        on disk even if the crash happened between two checkpoints.
+        """
+        max_det_id = -1
+        fpath = self.run_dir / "detections" / f"{pass_name}.jsonl"
+        if not fpath.exists():
+            return max_det_id
+        with open(fpath) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    max_det_id = max(max_det_id, json.loads(line).get("det_id", -1))
+        return max_det_id
+
     def close(self) -> None:
         self._write_manifest()
 

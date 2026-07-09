@@ -217,7 +217,12 @@ class OfflineOrchestrator:
             last_frame = self.store.get_last_frame(pass_name)
             if last_frame >= 0:
                 start_frame = last_frame + 1
-                det_id = checkpoint.get("det_id", 0)
+                # Detection records are written immediately per-frame, while the
+                # checkpoint's det_id is only current as of the last periodic
+                # checkpoint — scan the on-disk detections instead of trusting
+                # the checkpoint, so a crash between checkpoints can't cause
+                # det_id collisions in detections/<pass>.jsonl.
+                det_id = self.store.get_max_det_id(pass_name) + 1
 
         # Open the frame store for sequential reading. The PTS index built at
         # ingest time is carried on VideoMeta so a resumed run's seek_to() is

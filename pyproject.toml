@@ -17,6 +17,7 @@ dependencies = [
     "ultralytics>=8.3",
     "lapx>=0.5.2",
     "python-multipart>=0.0.9",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -35,8 +36,12 @@ select = ["E", "F", "I"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 
+[project.scripts]
+analyze = "analysis.cli:main"
+
 [tool.setuptools]
-packages = ["app"]
+packages = ["app", "analysis"]
 
 [tool.setuptools.package-data]
 app = ["static/*", "vision/trackers/*.yaml"]
+analysis = ["trackers/*.yaml"]

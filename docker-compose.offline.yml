@@ -1,0 +1,24 @@
+# Offline drone video analysis service.
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.offline.yml run --rm analyze /videos/film.mp4
+#   docker compose -f docker-compose.yml -f docker-compose.offline.yml run --rm analyze /videos/brandfilm.mp4 --tiles 2 --imgsz 1280 --device cpu --seed 42
+#
+# The analysis sidecar is written to ./analysis-output/ (mounted volume).
+# Re-running with the same arguments resumes from the last checkpoint.
+#
+# This adds the offline tool alongside the realtime API service; the API
+# (docker compose up) is unaffected.
+services:
+  analyze:
+    build: .
+    # The analyze command runs the analysis CLI script.
+    entrypoint: ["python", "-m", "analysis.cli"]
+    environment:
+      - MODEL=${MODEL:-yolo11n.pt}
+    volumes:
+      - ./videos:/videos:ro          # input videos (read-only)
+      - ./analysis-output:/analysis-output  # sidecar output
+    # Mount models if a local custom model is used.
+      - ./models:/models:ro
+    # No ports, no healthcheck — this is a batch job, not a server.
+    # Using `run` instead of `up` means it exits when done.

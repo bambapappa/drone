@@ -24,7 +24,7 @@ jobs:
           uv pip install --system ruff pytest pytest-asyncio
       - name: Lint
         run: |
-          ruff check app/ tests/ scripts/
-          ruff format --check app/ tests/ scripts/
+          ruff check app/ tests/ scripts/ analysis/
+          ruff format --check app/ tests/ scripts/ analysis/
       - name: Test
         run: pytest tests/ -v

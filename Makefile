@@ -1,4 +1,4 @@
-.PHONY: venv install dev test lint build up down deploy demo-video check serve
+.PHONY: venv install dev test lint build up down deploy demo-video check serve analyze
 
 # Skapa en isolerad virtuell miljö (rekommenderas på Mac/Linux).
 # Aktivera den sedan med:  source .venv/bin/activate
@@ -19,8 +19,12 @@ test:
 	pytest tests/ -v
 
 lint:
-	ruff check app/ tests/ scripts/
-	ruff format --check app/ tests/ scripts/
+	ruff check app/ tests/ scripts/ analysis/
+	ruff format --check app/ tests/ scripts/ analysis/
+
+# Offline analysis (native, not Docker)
+analyze:
+	python -m analysis.cli
 
 demo-video:
 	python scripts/make_demo_video.py

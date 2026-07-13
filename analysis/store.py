@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import pickle
 import subprocess
 import uuid
 from datetime import datetime, timezone
@@ -269,6 +270,32 @@ class ArtifactStore:
             return None
         with open(cp_path) as f:
             return json.load(f)
+
+    def save_tracker_state(self, pass_name: str, tracker_state: Any, tracker_lib_version: str) -> None:
+        """Persist opaque tracker/GMC state alongside the checkpoint.
+
+        Checkpoint scratch, not artifact schema: a resumed-to-completion run
+        leaves no trace of this beyond the invocation log. Tagged with the
+        tracker library version so a blob from a since-upgraded library is
+        refused on load rather than restored into a mismatched tracker.
+        """
+        cp_dir = self.run_dir / "checkpoints" / pass_name
+        cp_dir.mkdir(parents=True, exist_ok=True)
+        with open(cp_dir / "tracker_state.pkl", "wb") as f:
+            pickle.dump({"tracker_lib_version": tracker_lib_version, "state": tracker_state}, f)
+
+    def load_tracker_state(self, pass_name: str) -> dict[str, Any] | None:
+        """Load the checkpointed tracker/GMC state blob for a pass, or None."""
+        path = self.run_dir / "checkpoints" / pass_name / "tracker_state.pkl"
+        if not path.exists():
+            return None
+        with open(path, "rb") as f:
+            return pickle.load(f)
+
+    def delete_tracker_state(self, pass_name: str) -> None:
+        """Remove the tracker/GMC state blob once a pass completes."""
+        path = self.run_dir / "checkpoints" / pass_name / "tracker_state.pkl"
+        path.unlink(missing_ok=True)
 
     def get_last_frame(self, pass_name: str) -> int:
         """Return the last durably-processed frame_no for the given pass, or -1.

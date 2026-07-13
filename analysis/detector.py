@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -18,6 +19,8 @@ TRACKER_YAML = str(Path(__file__).parent / "trackers" / "botsort_drone.yaml")
 
 @dataclass
 class Detection:
+    # P1/P2-internal tracking lineage, not a stable public identity — that is
+    # person_id, assigned by the Phase 3 registry across occlusions/re-entries.
     track_id: int | None
     cls_name: str
     conf: float
@@ -69,6 +72,37 @@ class Detector:
                 f"Model {model_path} has no class matching {human_classes}; "
                 f"available: {sorted(lower.values())}"
             )
+
+    def get_tracker_state(self) -> Any:
+        """Return the live BOT-SORT tracker (track history + GMC state).
+
+        A checkpoint boundary must account for every piece of sequential
+        state that crosses it: writer position (frame/det_id), RNG stream
+        (reseeded per-frame, stateless), and this tracker/GMC history. Anything
+        picked up here and not persisted is a resume bug.
+        """
+        if self._manual_tracker is not None:
+            return self._manual_tracker
+        predictor = getattr(self.model, "predictor", None)
+        trackers = getattr(predictor, "trackers", None) if predictor is not None else None
+        return trackers[0] if trackers else None
+
+    def restore_tracker_state(self, state: Any) -> None:
+        """Restore tracker/GMC state from a prior get_tracker_state().
+
+        For tiles>1 the manually-driven tracker is replaced directly. For
+        tiles==1, ultralytics only creates its internal tracker lazily on the
+        first track() call, so this bootstraps that plumbing with a throwaway
+        black-frame call (result discarded) before injecting the restored state.
+        """
+        if self.tiles > 1:
+            self._manual_tracker = state
+            return
+        predictor = getattr(self.model, "predictor", None)
+        if predictor is None or not getattr(predictor, "trackers", None):
+            dummy = np.zeros((64, 64, 3), dtype=np.uint8)
+            self.track(dummy)
+        self.model.predictor.trackers[0] = state
 
     def reset_tracker(self) -> None:
         """Reset BoT-SORT state after a scene cut (file loop, source glitch)."""

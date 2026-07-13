@@ -108,29 +108,51 @@ class TestArtifactStore:
             store = ArtifactStore(tmp, "abc", "cfg")
             store.create()
             assert store.get_last_frame("p1") == -1  # no file yet
-            store.add_detection(
-                "p1",
-                0,
-                0,
-                {
-                    "xyxy_raw": [0, 0, 1, 1],
-                    "conf": 0.5,
-                    "cls": "person",
-                    "embedding": None,
-                },
-            )
-            store.add_detection(
-                "p1",
-                5,
-                1,
-                {
-                    "xyxy_raw": [0, 0, 1, 1],
-                    "conf": 0.5,
-                    "cls": "person",
-                    "embedding": None,
-                },
-            )
+            store.add_frame("p1", 0, {"pts_ms": 0.0})
+            store.add_frame("p1", 5, {"pts_ms": 500.0})
             assert store.get_last_frame("p1") == 5
+
+    def test_get_last_frame_ignores_detections_without_frame_row(self):
+        """A crash can leave orphaned detection rows for a frame whose frame
+        row was never written; those must not count as processed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ArtifactStore(tmp, "abc", "cfg")
+            store.create()
+            store.add_frame("p1", 0, {"pts_ms": 0.0})
+            store.add_detection(
+                "p1", 1, 0, {"xyxy_raw": [0, 0, 1, 1], "conf": 0.5, "cls": "person", "embedding": None}
+            )
+            assert store.get_last_frame("p1") == 0
+
+    def test_discard_orphaned_detections(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ArtifactStore(tmp, "abc", "cfg")
+            store.create()
+            store.add_detection(
+                "p1", 0, 0, {"xyxy_raw": [0, 0, 1, 1], "conf": 0.5, "cls": "person", "embedding": None}
+            )
+            store.add_detection(
+                "p1", 1, 1, {"xyxy_raw": [0, 0, 1, 1], "conf": 0.5, "cls": "person", "embedding": None}
+            )
+            discarded = store.discard_orphaned_detections("p1", 0)
+            assert discarded == 1
+            assert store.get_max_det_id("p1") == 0
+
+    def test_discard_orphaned_detections_noop_when_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ArtifactStore(tmp, "abc", "cfg")
+            store.create()
+            assert store.discard_orphaned_detections("p1", 5) == 0
+
+    def test_record_pass_progress_updates_watermark(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ArtifactStore(tmp, "abc", "cfg")
+            store.create()
+            store.record_pass_start("p1", {})
+            store.record_pass_progress("p1", 42)
+            entry = store._manifest["passes"]["p1"]
+            assert entry["last_frame"] == 42
+            assert entry["status"] == "partial"
 
     def test_config_hash_deterministic(self):
         s1 = {"model": "a.pt", "imgsz": 640, "conf": 0.3}

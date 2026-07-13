@@ -20,12 +20,50 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 SIDECAR_VERSION = 1
+
+
+def code_version() -> str:
+    """Git commit SHA of the running code, plus a '-dirty' suffix if the
+    working tree has uncommitted changes. 'unknown' outside a git checkout.
+
+    Used as part of the resume validation guard: resuming across a code
+    change would silently build a chimera artifact, so a resumed run must
+    match the code version that started it.
+    """
+    try:
+        repo_dir = Path(__file__).resolve().parent
+        sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=repo_dir,
+        )
+        if sha.returncode != 0:
+            return "unknown"
+        dirty = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=repo_dir,
+        )
+        suffix = "-dirty" if dirty.returncode == 0 and dirty.stdout.strip() else ""
+        return sha.stdout.strip() + suffix
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+
+
+class ResumeValidationError(ValueError):
+    """Raised when --resume targets a run whose provenance doesn't match
+    the current invocation (video, config, or code version changed)."""
 
 
 class ArtifactStore:
@@ -40,37 +78,134 @@ class ArtifactStore:
           checkpoints/      # pass checkpoint state
     """
 
-    def __init__(self, output_dir: str, video_hash: str, config_hash: str):
+    def __init__(self, output_dir: str, video_hash: str, config_hash: str, run_id: str | None = None):
         self.output_dir = Path(output_dir)
         self.video_hash = video_hash
         self.config_hash = config_hash
-        self.run_id = uuid.uuid4().hex[:12]
+        self.run_id = run_id or uuid.uuid4().hex[:12]
         self.run_dir = self.output_dir / self.run_id
         self._manifest: dict[str, Any] = {}
         self._open_writers: dict[str, Any] = {}
 
     def create(self) -> None:
-        """Create the sidecar directory structure and initial manifest."""
+        """Create the sidecar directory structure and initial manifest.
+
+        Always mints a fresh run — the default, provenance-clean path. Never
+        looks up or reuses an existing run directory; that is exclusively
+        open_existing()'s job, and only when explicitly requested via --resume.
+        """
         self.run_dir.mkdir(parents=True, exist_ok=True)
         for sub in ("frames", "detections", "checkpoints"):
             (self.run_dir / sub).mkdir(exist_ok=True)
 
+        now = datetime.now(timezone.utc).isoformat()
         self._manifest = {
             "sidecar_version": SIDECAR_VERSION,
             "run_id": self.run_id,
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": now,
             "video_hash": self.video_hash,
             "config_hash": self.config_hash,
+            "code_version": code_version(),
             "passes": {},
+            "invocations": [{"timestamp": now, "code_version": code_version(), "resumed_from": None}],
         }
         self._write_manifest()
 
+    @classmethod
+    def open_existing(cls, output_dir: str, run_id: str, video_hash: str, config_hash: str) -> ArtifactStore:
+        """Open an existing run directory for explicit --resume.
+
+        Refuses to continue unless the target manifest's video_hash,
+        config_hash, and code_version all match the current invocation —
+        resuming across a video, config (which includes model/weights), or
+        code change would build a chimera artifact the manifest would then
+        misrepresent as a single consistent run. Raises ResumeValidationError
+        on any mismatch or if the run directory doesn't exist.
+        """
+        run_dir = Path(output_dir) / run_id
+        manifest_path = run_dir / "manifest.json"
+        if not manifest_path.exists():
+            raise ResumeValidationError(f"No run found at {run_dir} (manifest.json missing)")
+
+        with open(manifest_path) as f:
+            manifest = json.load(f)
+
+        current_code_version = code_version()
+        mismatches = []
+        if manifest.get("video_hash") != video_hash:
+            mismatches.append(
+                f"video_hash: run has {manifest.get('video_hash')!r}, current is {video_hash!r}"
+            )
+        if manifest.get("config_hash") != config_hash:
+            mismatches.append(
+                f"config_hash: run has {manifest.get('config_hash')!r}, current is {config_hash!r}"
+            )
+        if manifest.get("code_version") != current_code_version:
+            mismatches.append(
+                f"code_version: run has {manifest.get('code_version')!r}, current is {current_code_version!r}"
+            )
+        if mismatches:
+            raise ResumeValidationError(
+                f"Cannot resume run {run_id}: provenance mismatch\n  " + "\n  ".join(mismatches)
+            )
+
+        store = cls(output_dir, video_hash, config_hash, run_id=run_id)
+        store._manifest = manifest
+        store._manifest.setdefault("invocations", [])
+        store._manifest["invocations"].append(
+            {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "code_version": current_code_version,
+                "resumed_from": run_id,
+            }
+        )
+        store._write_manifest()
+        return store
+
+    @staticmethod
+    def resolve_latest(output_dir: str, video_hash: str, config_hash: str) -> str | None:
+        """Find the most recently created run under output_dir whose
+        video_hash and config_hash match, for the explicit `--resume latest`
+        convenience. Returns None if no matching run exists.
+
+        Resolution only happens when the user explicitly passes
+        `--resume latest` — a bare `analyze <video>` never consults this.
+        """
+        base = Path(output_dir)
+        if not base.is_dir():
+            return None
+        best_run_id: str | None = None
+        best_created_at = ""
+        for candidate in base.iterdir():
+            manifest_path = candidate / "manifest.json"
+            if not manifest_path.exists():
+                continue
+            try:
+                with open(manifest_path) as f:
+                    manifest = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                continue
+            if manifest.get("video_hash") != video_hash or manifest.get("config_hash") != config_hash:
+                continue
+            created_at = manifest.get("created_at", "")
+            if created_at > best_created_at:
+                best_created_at = created_at
+                best_run_id = manifest.get("run_id", candidate.name)
+        return best_run_id
+
     def record_pass_start(self, pass_name: str, pass_meta: dict[str, Any]) -> None:
-        """Record that a pass has started. Called before processing begins."""
+        """Record that a pass has started. Called before processing begins.
+
+        Preserves the prior invocation's checkpoint watermark (last_frame), if
+        any, so the manifest stays self-describing across a resumed run rather
+        than losing progress history the instant the new invocation starts.
+        """
+        prior = self._manifest["passes"].get(pass_name, {})
         self._manifest["passes"][pass_name] = {
             "started_at": datetime.now(timezone.utc).isoformat(),
             "meta": pass_meta,
             "status": "running",
+            "last_frame": prior.get("last_frame", -1),
         }
         self._write_manifest()
 
@@ -136,23 +271,71 @@ class ArtifactStore:
             return json.load(f)
 
     def get_last_frame(self, pass_name: str) -> int:
-        """Return the last persisted frame_no for the given pass, or -1.
+        """Return the last durably-processed frame_no for the given pass, or -1.
 
-        Checks both frames/ and detections/: detections/ only gets a row when
-        a frame produced at least one detection, so a trailing run of
-        empty-detection frames would otherwise look unprocessed on resume.
+        Derived from frames/ alone: add_frame() is called exactly once per
+        processed frame, after all of that frame's detections have already
+        been written, so a frame row is only ever present once the frame is
+        fully durable. Including detections/ in this scan would misreport a
+        frame as complete if a crash left a partial or orphaned run of
+        detection rows with no matching frame row.
         """
         last_frame = -1
-        for sub in ("frames", "detections"):
-            fpath = self.run_dir / sub / f"{pass_name}.jsonl"
-            if not fpath.exists():
-                continue
-            with open(fpath) as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        last_frame = max(last_frame, json.loads(line).get("frame_no", -1))
+        fpath = self.run_dir / "frames" / f"{pass_name}.jsonl"
+        if not fpath.exists():
+            return last_frame
+        with open(fpath) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    last_frame = max(last_frame, json.loads(line).get("frame_no", -1))
         return last_frame
+
+    def discard_orphaned_detections(self, pass_name: str, last_frame: int) -> int:
+        """Drop any detection rows for frame_no > last_frame.
+
+        Detection rows are appended before the owning frame's row, so a crash
+        mid-frame can leave orphaned detection rows for a frame that never got
+        a frame row (and therefore isn't counted as processed by
+        get_last_frame). Call this before recomputing det_id on resume so
+        those orphaned rows aren't double-counted or left with an ID that
+        collides with the frame's about-to-be-redone detections.
+
+        Returns the number of rows discarded.
+        """
+        fpath = self.run_dir / "detections" / f"{pass_name}.jsonl"
+        if not fpath.exists():
+            return 0
+        kept: list[str] = []
+        discarded = 0
+        with open(fpath) as f:
+            for line in f:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                if json.loads(stripped).get("frame_no", -1) > last_frame:
+                    discarded += 1
+                else:
+                    kept.append(line if line.endswith("\n") else line + "\n")
+        if discarded:
+            with open(fpath, "w") as f:
+                f.writelines(kept)
+        return discarded
+
+    def record_pass_progress(self, pass_name: str, last_frame: int) -> None:
+        """Update the manifest's per-pass checkpoint watermark.
+
+        Purely descriptive (resume itself is derived from frames/ on disk,
+        not this field) — makes a partially-completed run self-describing by
+        inspecting manifest.json alone, without needing to replay the JSONL.
+        """
+        if pass_name not in self._manifest["passes"]:
+            return
+        entry = self._manifest["passes"][pass_name]
+        entry["last_frame"] = last_frame
+        if entry.get("status") == "running":
+            entry["status"] = "partial"
+        self._write_manifest()
 
     def get_max_det_id(self, pass_name: str) -> int:
         """Return the highest persisted det_id for the given pass, or -1.

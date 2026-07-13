@@ -13,7 +13,9 @@ artifact store.
 
 from __future__ import annotations
 
+import hashlib
 import os
+import random
 import time as _time
 from dataclasses import dataclass, field
 from typing import Any
@@ -25,6 +27,33 @@ from analysis.registry import appearance_hist
 from analysis.store import ArtifactStore
 
 FLOW_W = 480
+
+
+def _seed_rng(seed: int) -> None:
+    """Seed every RNG the analysis path touches. Called once at run start and
+    again (with a derived seed) before every frame, so a resumed run's RNG
+    state matches an uninterrupted run frame-for-frame."""
+    random.seed(seed)
+    np.random.seed(seed % (2**32))
+    try:
+        import torch
+
+        torch.manual_seed(seed % (2**63))
+    except ImportError:
+        pass
+
+
+def _frame_seed(base_seed: int, pass_name: str, frame_no: int) -> int:
+    """Derive a per-frame seed from (base_seed, pass, frame_no).
+
+    Stateless and independent of prior frames — a resumed run reseeds each
+    frame identically to an uninterrupted run, with no RNG state to persist
+    across a checkpoint. Uses a stable hash (not Python's builtin hash(),
+    which is randomly salted per-process unless PYTHONHASHSEED is fixed) so
+    the same triple always maps to the same seed across separate invocations.
+    """
+    payload = f"{base_seed}:{pass_name}:{frame_no}".encode()
+    return int(hashlib.sha256(payload).hexdigest()[:16], 16)
 
 
 @dataclass
@@ -209,26 +238,37 @@ class OfflineOrchestrator:
         }
         self.store.record_pass_start(pass_name, pass_meta)
 
-        # Check for resume
-        checkpoint = self.store.load_checkpoint(pass_name)
+        # Determinism: seed every RNG up front. Per-frame reseeding below (not
+        # persisted RNG state) is what actually makes a resumed run reproduce
+        # an uninterrupted run frame-for-frame.
+        _seed_rng(self.config.seed)
+        try:
+            import torch
+
+            torch.use_deterministic_algorithms(True, warn_only=True)
+        except ImportError:
+            pass
+
+        # Check for resume. Derived purely from the durable frames/detections
+        # JSONL on disk, not from the periodic checkpoint file — a crash before
+        # the first checkpoint interval fires would otherwise be indistinguishable
+        # from a fresh run and reprocess (duplicate) already-persisted frames.
         start_frame = 0
         det_id = 0
-        if checkpoint is not None:
-            last_frame = self.store.get_last_frame(pass_name)
-            if last_frame >= 0:
-                start_frame = last_frame + 1
-                # Detection records are written immediately per-frame, while the
-                # checkpoint's det_id is only current as of the last periodic
-                # checkpoint — scan the on-disk detections instead of trusting
-                # the checkpoint, so a crash between checkpoints can't cause
-                # det_id collisions in detections/<pass>.jsonl.
-                det_id = self.store.get_max_det_id(pass_name) + 1
+        last_frame = self.store.get_last_frame(pass_name)
+        if last_frame >= 0:
+            # A crash can leave orphaned detection rows for a frame that never
+            # got its frame row written (add_frame runs after all of a frame's
+            # detections). Discard them before recomputing det_id so that frame
+            # is fully redone rather than double-counted.
+            self.store.discard_orphaned_detections(pass_name, last_frame)
+            start_frame = last_frame + 1
+            det_id = self.store.get_max_det_id(pass_name) + 1
 
         # Open the frame store for sequential reading. The PTS index built at
         # ingest time is carried on VideoMeta so a resumed run's seek_to() is
         # bounds-checked against real decodable frames, not an empty index.
         frame_store = FrameStore(self.meta.path, self.meta)
-        frame_store._pts_idx = self.meta.pts_index
         if start_frame > 0:
             if not frame_store.seek_to(start_frame):
                 self.store.record_pass_error(pass_name, f"Could not seek to frame {start_frame}")
@@ -270,6 +310,10 @@ class OfflineOrchestrator:
                 # Apply ROI if configured (for split-screen IR)
                 frame = self._apply_roi(frame)
                 h, w = frame.shape[:2]
+
+                # Derived per-frame seed: stateless, so a resumed run reseeds
+                # identically to an uninterrupted one at this exact frame.
+                _seed_rng(_frame_seed(self.config.seed, pass_name, frame_no))
 
                 # Run detection
                 detections = detector.track(frame)
@@ -321,6 +365,7 @@ class OfflineOrchestrator:
                         "processed": processed,
                     }
                     self.store.save_checkpoint(pass_name, cp)
+                    self.store.record_pass_progress(pass_name, frame_no)
         finally:
             frame_store.close()
             os.unlink(tracker_yaml_path)

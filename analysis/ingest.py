@@ -62,7 +62,7 @@ class FrameStore:
         self.meta = meta
         self._cap: cv2.VideoCapture | None = None
         self._frame_no = 0
-        self._pts_idx: list[tuple[int, float]] = []  # [(frame_no, pts_ms), ...]
+        self._pts_idx: list[tuple[int, float]] = meta.pts_index  # [(frame_no, pts_ms), ...]
 
     def _open(self) -> None:
         if self._cap is not None:
@@ -229,6 +229,5 @@ def ingest(video_path: str) -> tuple[VideoMeta, FrameStore]:
     )
 
     store = FrameStore(path, meta)
-    store._pts_idx = index
 
     return meta, store

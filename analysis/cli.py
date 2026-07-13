@@ -4,12 +4,18 @@
 Usage:
     analyze <video> [--output DIR] [--model PATH] [--device DEVICE]
                     [--imgsz N] [--conf F] [--tiles N] [--seed N]
+                    [--resume RUN_ID | --resume latest]
 
 Runs ingest + P1 detection end-to-end. The analysis sidecar is written to
 <output>/<run_id>/ with manifest.json, frames/, detections/, and checkpoints/.
 
-Re-running the same command on the same video is bit-identical resumable:
-if a previous run was interrupted, it resumes from the last checkpoint.
+By default every invocation mints a fresh run_id and a fresh sidecar —
+re-running the same command does NOT resume automatically. To continue an
+interrupted run, pass --resume <run_id> (or --resume latest to resolve the
+most recent matching run under --output). Resume refuses to continue unless
+the target run's video hash, config hash, and code version all match the
+current invocation, so it can never silently splice together a run across a
+config or code change.
 """
 
 from __future__ import annotations
@@ -48,6 +54,13 @@ def main() -> None:
         type=float,
         default=8.0,
         help="Track buffer in video seconds (BoT-SORT track_buffer = fps × this)",
+    )
+    ap.add_argument(
+        "--resume",
+        default=None,
+        metavar="RUN_ID",
+        help="Resume an existing run (by run_id, or 'latest' to resolve the most "
+        "recent matching run under --output). Default: mint a fresh run_id.",
     )
 
     args = ap.parse_args()
@@ -114,12 +127,32 @@ def main() -> None:
     config_hash = ArtifactStore.config_hash_from_settings(config.to_dict())
 
     # ---- Store ----
-    store = ArtifactStore(
-        output_dir=output_dir,
-        video_hash=meta.video_hash,
-        config_hash=config_hash,
-    )
-    store.create()
+    from analysis.store import ResumeValidationError
+
+    if args.resume:
+        resume_id = args.resume
+        if resume_id == "latest":
+            resume_id = ArtifactStore.resolve_latest(output_dir, meta.video_hash, config_hash)
+            if resume_id is None:
+                print(
+                    f"Error: no existing run under {output_dir} matches this "
+                    "video and config to resume from.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+        try:
+            store = ArtifactStore.open_existing(output_dir, resume_id, meta.video_hash, config_hash)
+        except ResumeValidationError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        print(f"Resuming run:     {store.run_id}")
+    else:
+        store = ArtifactStore(
+            output_dir=output_dir,
+            video_hash=meta.video_hash,
+            config_hash=config_hash,
+        )
+        store.create()
     print(f"Sidecar store:    {store.run_dir}")
     print(f"  Run ID:         {store.run_id}")
     print()

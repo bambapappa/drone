@@ -2,8 +2,9 @@
 
 The `analysis` package contains the analyzers carved out of `app.vision`, plus
 the new offline-only modules: ingest, sidecar store, and the sequential
-multi-pass orchestrator. The realtime PoC uses thin shim modules in `app.vision`
-that re-export from here, so both code paths share the same logic.
+multi-pass orchestrator. The carried-forward analyzer modules are byte-identical
+independent copies of their `app.vision` originals — `app.vision` itself is
+left untouched, and the two code paths evolve independently.
 
 See the architecture report for the module boundaries and data model.
 """

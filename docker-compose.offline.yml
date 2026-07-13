@@ -4,7 +4,10 @@
 #   docker compose -f docker-compose.yml -f docker-compose.offline.yml run --rm analyze /videos/brandfilm.mp4 --tiles 2 --imgsz 1280 --device cpu --seed 42
 #
 # The analysis sidecar is written to ./analysis-output/ (mounted volume).
-# Re-running with the same arguments resumes from the last checkpoint.
+# Every run mints a fresh run_id by default — re-running the same command
+# does NOT resume automatically. To continue an interrupted run, pass
+# --resume <run_id> (or --resume latest), e.g.:
+#   docker compose -f docker-compose.yml -f docker-compose.offline.yml run --rm analyze /videos/film.mp4 --resume latest
 #
 # This adds the offline tool alongside the realtime API service; the API
 # (docker compose up) is unaffected.

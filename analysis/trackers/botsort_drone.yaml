@@ -20,5 +20,8 @@ gmc_method: sparseOptFlow  # camera motion compensation for the moving drone
 
 proximity_thresh: 0.5
 appearance_thresh: 0.30
-with_reid: True            # detector-feature ReID stabilizes IDs through crossings
+with_reid: False           # analysis.detector.Detector always overrides this to False —
+                           # detection and tracking are split (replay-able on resume), so
+                           # no detector-feature ReID is available; the person registry's
+                           # appearance re-ID handles it instead
 model: auto

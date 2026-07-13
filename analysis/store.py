@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import pickle
 import subprocess
 import uuid
 from datetime import datetime, timezone
@@ -28,6 +27,21 @@ from pathlib import Path
 from typing import Any
 
 SIDECAR_VERSION = 1
+
+
+def tracker_lib_version() -> str:
+    """Version of the tracking library (ultralytics) whose BOTSORT
+    association logic the resume replay warm-up re-derives tracker/GMC
+    state from. Replay determinism only holds if the library that produced
+    the interrupted run's checkpoint is unchanged — a version bump refuses
+    resume rather than silently reconstructing state with different tracker
+    internals."""
+    try:
+        import ultralytics
+
+        return ultralytics.__version__
+    except ImportError:
+        return "no-ultralytics"
 
 
 def code_version() -> str:
@@ -107,6 +121,7 @@ class ArtifactStore:
             "video_hash": self.video_hash,
             "config_hash": self.config_hash,
             "code_version": code_version(),
+            "tracker_lib_version": tracker_lib_version(),
             "passes": {},
             "invocations": [{"timestamp": now, "code_version": code_version(), "resumed_from": None}],
         }
@@ -117,11 +132,14 @@ class ArtifactStore:
         """Open an existing run directory for explicit --resume.
 
         Refuses to continue unless the target manifest's video_hash,
-        config_hash, and code_version all match the current invocation —
-        resuming across a video, config (which includes model/weights), or
-        code change would build a chimera artifact the manifest would then
-        misrepresent as a single consistent run. Raises ResumeValidationError
-        on any mismatch or if the run directory doesn't exist.
+        config_hash, code_version, and tracker_lib_version all match the
+        current invocation — resuming across a video, config (which includes
+        model/weights), code, or tracker-library change would build a
+        chimera artifact the manifest would then misrepresent as a single
+        consistent run, and would break the replay warm-up's bit-identity
+        guarantee (it re-derives tracker state from persisted detections
+        using the *current* tracker library). Raises ResumeValidationError on
+        any mismatch or if the run directory doesn't exist.
         """
         run_dir = Path(output_dir) / run_id
         manifest_path = run_dir / "manifest.json"
@@ -132,6 +150,7 @@ class ArtifactStore:
             manifest = json.load(f)
 
         current_code_version = code_version()
+        current_tracker_lib_version = tracker_lib_version()
         mismatches = []
         if manifest.get("video_hash") != video_hash:
             mismatches.append(
@@ -144,6 +163,11 @@ class ArtifactStore:
         if manifest.get("code_version") != current_code_version:
             mismatches.append(
                 f"code_version: run has {manifest.get('code_version')!r}, current is {current_code_version!r}"
+            )
+        if manifest.get("tracker_lib_version") != current_tracker_lib_version:
+            mismatches.append(
+                f"tracker_lib_version: run has {manifest.get('tracker_lib_version')!r}, "
+                f"current is {current_tracker_lib_version!r}"
             )
         if mismatches:
             raise ResumeValidationError(
@@ -271,32 +295,6 @@ class ArtifactStore:
         with open(cp_path) as f:
             return json.load(f)
 
-    def save_tracker_state(self, pass_name: str, tracker_state: Any, tracker_lib_version: str) -> None:
-        """Persist opaque tracker/GMC state alongside the checkpoint.
-
-        Checkpoint scratch, not artifact schema: a resumed-to-completion run
-        leaves no trace of this beyond the invocation log. Tagged with the
-        tracker library version so a blob from a since-upgraded library is
-        refused on load rather than restored into a mismatched tracker.
-        """
-        cp_dir = self.run_dir / "checkpoints" / pass_name
-        cp_dir.mkdir(parents=True, exist_ok=True)
-        with open(cp_dir / "tracker_state.pkl", "wb") as f:
-            pickle.dump({"tracker_lib_version": tracker_lib_version, "state": tracker_state}, f)
-
-    def load_tracker_state(self, pass_name: str) -> dict[str, Any] | None:
-        """Load the checkpointed tracker/GMC state blob for a pass, or None."""
-        path = self.run_dir / "checkpoints" / pass_name / "tracker_state.pkl"
-        if not path.exists():
-            return None
-        with open(path, "rb") as f:
-            return pickle.load(f)
-
-    def delete_tracker_state(self, pass_name: str) -> None:
-        """Remove the tracker/GMC state blob once a pass completes."""
-        path = self.run_dir / "checkpoints" / pass_name / "tracker_state.pkl"
-        path.unlink(missing_ok=True)
-
     def get_last_frame(self, pass_name: str) -> int:
         """Return the last durably-processed frame_no for the given pass, or -1.
 
@@ -382,6 +380,25 @@ class ArtifactStore:
                 if line:
                     max_det_id = max(max_det_id, json.loads(line).get("det_id", -1))
         return max_det_id
+
+    def iter_detections(self, pass_name: str, max_frame_no: int | None = None):
+        """Yield persisted detection records for a pass, optionally bounded
+        to frame_no <= max_frame_no. Used by the resume replay warm-up to
+        reconstruct tracker/GMC state from already-persisted detections
+        without re-running inference.
+        """
+        fpath = self.run_dir / "detections" / f"{pass_name}.jsonl"
+        if not fpath.exists():
+            return
+        with open(fpath) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                rec = json.loads(line)
+                if max_frame_no is not None and rec.get("frame_no", -1) > max_frame_no:
+                    continue
+                yield rec
 
     def close(self) -> None:
         self._write_manifest()

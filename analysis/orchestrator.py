@@ -17,6 +17,7 @@ import hashlib
 import os
 import random
 import time as _time
+from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -24,22 +25,9 @@ import numpy as np
 
 from analysis.ingest import FrameStore, VideoMeta
 from analysis.registry import appearance_hist
-from analysis.store import ArtifactStore, ResumeValidationError
+from analysis.store import ArtifactStore
 
 FLOW_W = 480
-
-
-def _tracker_lib_version() -> str:
-    """Version of the library whose internals get pickled into a pass's
-    tracker-state checkpoint blob. A resume must be pinned to the exact
-    version that wrote the blob — BOT-SORT/STrack internals aren't a stable
-    pickle format across library releases."""
-    try:
-        import ultralytics
-
-        return ultralytics.__version__
-    except ImportError:
-        return "no-ultralytics"
 
 
 def _seed_rng(seed: int) -> None:
@@ -268,7 +256,6 @@ class OfflineOrchestrator:
         # from a fresh run and reprocess (duplicate) already-persisted frames.
         start_frame = 0
         det_id = 0
-        tracker_state = None
         last_frame = self.store.get_last_frame(pass_name)
         if last_frame >= 0:
             # A crash can leave orphaned detection rows for a frame that never
@@ -279,33 +266,11 @@ class OfflineOrchestrator:
             start_frame = last_frame + 1
             det_id = self.store.get_max_det_id(pass_name) + 1
 
-            # The tracker/GMC history is sequential state that crosses this
-            # checkpoint boundary same as frame/det_id do. Without restoring
-            # it, a resumed run would start the tracker cold and diverge
-            # (track_id renumbering, GMC drift) from an uninterrupted run.
-            # Refuse rather than silently resume without it.
-            current_lib_version = _tracker_lib_version()
-            blob = self.store.load_tracker_state(pass_name)
-            if blob is None or blob.get("tracker_lib_version") != current_lib_version:
-                msg = (
-                    f"Cannot resume pass {pass_name} at frame {start_frame}: missing or "
-                    f"stale tracker checkpoint state (blob version "
-                    f"{blob.get('tracker_lib_version') if blob else None!r}, current "
-                    f"{current_lib_version!r}). Start a fresh run instead."
-                )
-                self.store.record_pass_error(pass_name, msg)
-                raise ResumeValidationError(msg)
-            tracker_state = blob["state"]
-
-        # Open the frame store for sequential reading. The PTS index built at
-        # ingest time is carried on VideoMeta so a resumed run's seek_to() is
-        # bounds-checked against real decodable frames, not an empty index.
+        # Open the frame store for sequential reading. A fresh FrameStore
+        # starts at frame 0, so the replay warm-up below (which reads
+        # sequentially through [0, start_frame)) leaves it correctly
+        # positioned at start_frame for the main loop — no seek needed.
         frame_store = FrameStore(self.meta.path, self.meta)
-        if start_frame > 0:
-            if not frame_store.seek_to(start_frame):
-                self.store.record_pass_error(pass_name, f"Could not seek to frame {start_frame}")
-                frame_store.close()
-                return
 
         # Lazy-load the detector (heavy import)
         from analysis.detector import Detector
@@ -326,8 +291,29 @@ class OfflineOrchestrator:
                 tiles=self.config.tiles,
                 tracker_yaml=tracker_yaml_path,
             )
-            if tracker_state is not None:
-                detector.restore_tracker_state(tracker_state)
+
+            if start_frame > 0:
+                # Deterministic replay warm-up: the tracker/GMC history is
+                # sequential state that crosses the checkpoint boundary same
+                # as frame/det_id do. Rebuild it by replaying already-
+                # persisted detections through the tracker (no re-inference)
+                # over [0, start_frame) — this reproduces the exact
+                # tracker.update() sequence an uninterrupted run performed,
+                # so state at start_frame matches by construction.
+                replay_dets: dict[int, list[dict[str, Any]]] = defaultdict(list)
+                for rec in self.store.iter_detections(pass_name, max_frame_no=start_frame - 1):
+                    replay_dets[rec["frame_no"]].append(rec)
+                for warm_frame_no in range(start_frame):
+                    warm_frame = frame_store.read()
+                    if warm_frame is None:
+                        msg = f"Could not replay frame {warm_frame_no} of {start_frame} for resume warm-up"
+                        self.store.record_pass_error(pass_name, msg)
+                        frame_store.close()
+                        return
+                    warm_frame = self._apply_roi(warm_frame)
+                    h, w = warm_frame.shape[:2]
+                    det = detector.build_replay_boxes(replay_dets.get(warm_frame_no, []), (h, w))
+                    detector.step_tracker(det, warm_frame)
 
             total_frames = self.meta.total_frames
             processed = 0
@@ -400,9 +386,6 @@ class OfflineOrchestrator:
                     }
                     self.store.save_checkpoint(pass_name, cp)
                     self.store.record_pass_progress(pass_name, frame_no)
-                    self.store.save_tracker_state(
-                        pass_name, detector.get_tracker_state(), _tracker_lib_version()
-                    )
         finally:
             frame_store.close()
             os.unlink(tracker_yaml_path)
@@ -416,4 +399,3 @@ class OfflineOrchestrator:
             "fps_effective": round(processed / max(elapsed, 0.001), 1),
         }
         self.store.record_pass_complete(pass_name, stats)
-        self.store.delete_tracker_state(pass_name)

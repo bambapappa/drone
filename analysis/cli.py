@@ -13,9 +13,9 @@ By default every invocation mints a fresh run_id and a fresh sidecar —
 re-running the same command does NOT resume automatically. To continue an
 interrupted run, pass --resume <run_id> (or --resume latest to resolve the
 most recent matching run under --output). Resume refuses to continue unless
-the target run's video hash, config hash, and code version all match the
-current invocation, so it can never silently splice together a run across a
-config or code change.
+the target run's video hash, config hash, code version, and tracker library
+version all match the current invocation, so it can never silently splice
+together a run across a config, code, or tracker-library change.
 """
 
 from __future__ import annotations

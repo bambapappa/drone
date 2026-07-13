@@ -52,21 +52,30 @@ class FakeDetector:
     and seeding logic can be exercised without loading model weights.
 
     Stateful like the real BOT-SORT tracker: track_id and a fake GMC-style
-    drift offset both accumulate across calls on one instance. A fresh
-    instance therefore produces different output than one warmed up over
-    prior frames — the same divergence that made the original resume bug
-    invisible to a stateless fake."""
+    drift offset both accumulate across calls on one instance (one Detector
+    construction = one process lifetime, same as the real Detector — `calls`
+    is instance-level for that reason, not class-level, so a crash_after
+    threshold applies to a single run_pass_p1() invocation rather than
+    leaking across every FakeDetector built earlier in the same test). A
+    fresh instance therefore produces different output than one warmed up
+    over prior frames — the same divergence that made the original resume
+    bug invisible to a stateless fake.
 
-    calls = 0
+    step_tracker/build_replay_boxes mirror the real Detector's replay
+    primitive: they reconstruct state from a persisted record (track_id),
+    not from fresh randomness, so the resume warm-up loop is actually
+    exercised (not bypassed) by these tests."""
+
     crash_after = None
 
     def __init__(self, **kwargs):
+        self.calls = 0
         self._next_track_id = 1
         self._gmc_offset = 0.0
 
     def track(self, frame):
-        type(self).calls += 1
-        if type(self).crash_after is not None and type(self).calls > type(self).crash_after:
+        self.calls += 1
+        if type(self).crash_after is not None and self.calls > type(self).crash_after:
             raise RuntimeError("simulated crash")
         conf = random.random()
         dx = float(np.random.rand() * 10)
@@ -84,20 +93,29 @@ class FakeDetector:
             )
         ]
 
-    def get_tracker_state(self):
-        return {"next_track_id": self._next_track_id, "gmc_offset": self._gmc_offset}
+    def build_replay_boxes(self, records, shape):
+        return records
 
-    def restore_tracker_state(self, state):
-        self._next_track_id = state["next_track_id"]
-        self._gmc_offset = state["gmc_offset"]
+    def step_tracker(self, det, frame):
+        for rec in det:
+            self._next_track_id = max(self._next_track_id, rec["track_id"] + 1)
+            self._gmc_offset += 1.0
+        return []
+
+
+class ColdFakeDetector(FakeDetector):
+    """Same as FakeDetector but step_tracker is a no-op — simulates a naive
+    resume that skips tracker-state reconstruction, to prove the acceptance
+    test below actually depends on the warm-up (not a false positive)."""
+
+    def step_tracker(self, det, frame):
+        return []
 
 
 @pytest.fixture(autouse=True)
 def _reset_fake_detector():
-    FakeDetector.calls = 0
     FakeDetector.crash_after = None
     yield
-    FakeDetector.calls = 0
     FakeDetector.crash_after = None
 
 
@@ -160,34 +178,40 @@ class TestInterruptedResume:
             assert resumed_frames == baseline_frames
             assert resumed_dets == baseline_dets
 
-    def test_resume_refuses_without_tracker_state_blob(self, monkeypatch):
-        """A crash before the first checkpoint interval leaves frame/detection
-        rows on disk but no tracker/GMC state blob yet. Resuming from there
-        must be refused outright, never silently continued with a cold
-        tracker — that would produce a resumed run that diverges from an
-        uninterrupted one, exactly the bug the stateful FakeDetector above is
-        designed to catch."""
-        monkeypatch.setattr("analysis.detector.Detector", FakeDetector)
+    def test_naive_resume_without_warmup_diverges_from_baseline(self, monkeypatch):
+        """Demonstrates the seam the warm-up guards: swap in a Detector whose
+        step_tracker is a no-op (skips tracker-state reconstruction, as a
+        naive frame-watermark-only resume would) and show the resumed run's
+        track_id sequence and boxes diverge from an uninterrupted baseline —
+        proving test_resumed_run_matches_uninterrupted_run above isn't a
+        vacuous pass."""
         with tempfile.TemporaryDirectory() as tmp:
             vpath = _make_test_video(f"{tmp}/test.mp4", n_frames=12)
             meta = _make_meta(vpath)
             config = OfflineConfig(seed=7)
             config_hash = ArtifactStore.config_hash_from_settings(config.to_dict())
 
-            crashed_store = ArtifactStore(f"{tmp}/out", meta.video_hash, config_hash)
+            monkeypatch.setattr("analysis.detector.Detector", FakeDetector)
+            baseline_store = ArtifactStore(f"{tmp}/out_baseline", meta.video_hash, config_hash)
+            baseline_store.create()
+            OfflineOrchestrator(meta, baseline_store, config).run_pass_p1()
+            _, baseline_dets = _sidecar_bytes(baseline_store, "p1_detect")
+
+            crashed_store = ArtifactStore(f"{tmp}/out_resumed", meta.video_hash, config_hash)
             crashed_store.create()
             FakeDetector.crash_after = 5
             with pytest.raises(RuntimeError, match="simulated crash"):
                 OfflineOrchestrator(meta, crashed_store, config).run_pass_p1()
             FakeDetector.crash_after = None
 
-            assert not (crashed_store.run_dir / "checkpoints" / "p1_detect" / "tracker_state.pkl").exists()
-
             resumed_store = ArtifactStore.open_existing(
-                f"{tmp}/out", crashed_store.run_id, meta.video_hash, config_hash
+                f"{tmp}/out_resumed", crashed_store.run_id, meta.video_hash, config_hash
             )
-            with pytest.raises(ResumeValidationError):
-                OfflineOrchestrator(meta, resumed_store, config).run_pass_p1()
+            monkeypatch.setattr("analysis.detector.Detector", ColdFakeDetector)
+            OfflineOrchestrator(meta, resumed_store, config).run_pass_p1()
+            _, resumed_dets = _sidecar_bytes(resumed_store, "p1_detect")
+
+            assert resumed_dets != baseline_dets
 
     def test_resume_refuses_on_config_mismatch(self, monkeypatch):
         monkeypatch.setattr("analysis.detector.Detector", FakeDetector)

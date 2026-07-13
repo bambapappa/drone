@@ -51,17 +51,18 @@ class Detector:
         self.iou = iou
         self.tiles = max(1, tiles)
         self.tracker_yaml = tracker_yaml or TRACKER_YAML
-        self._manual_tracker = None
-        if self.tiles > 1:
-            # Tiled detections can't go through model.track(); drive BoT-SORT
-            # manually. Native (feature-based) ReID is unavailable on merged
-            # boxes — the person registry's appearance re-ID still applies.
-            from ultralytics.trackers.bot_sort import BOTSORT
-            from ultralytics.utils import YAML, IterableSimpleNamespace
+        # Detection (model.predict) and tracking (manual BOTSORT.update) are
+        # always split, for tiles==1 as much as tiles>1: this is what makes
+        # tracker/GMC state replay-able on resume without re-running
+        # inference (step_tracker below). Native (feature-based) ReID is
+        # unavailable on this manually-driven path — the person registry's
+        # appearance re-ID handles it instead.
+        from ultralytics.trackers.bot_sort import BOTSORT
+        from ultralytics.utils import YAML, IterableSimpleNamespace
 
-            tcfg = YAML.load(self.tracker_yaml)
-            tcfg["with_reid"] = False  # no feature ReID on merged tiles; registry handles it
-            self._manual_tracker = BOTSORT(IterableSimpleNamespace(**tcfg))
+        tcfg = YAML.load(self.tracker_yaml)
+        tcfg["with_reid"] = False
+        self._manual_tracker = BOTSORT(IterableSimpleNamespace(**tcfg))
         self.names: dict[int, str] = dict(self.model.names)
         lower = {i: n.lower() for i, n in self.names.items()}
         self.human_ids = {i for i, n in lower.items() if n in human_classes}
@@ -73,91 +74,75 @@ class Detector:
                 f"available: {sorted(lower.values())}"
             )
 
-    def get_tracker_state(self) -> Any:
-        """Return the live BOT-SORT tracker (track history + GMC state).
-
-        A checkpoint boundary must account for every piece of sequential
-        state that crosses it: writer position (frame/det_id), RNG stream
-        (reseeded per-frame, stateless), and this tracker/GMC history. Anything
-        picked up here and not persisted is a resume bug.
-        """
-        if self._manual_tracker is not None:
-            return self._manual_tracker
-        predictor = getattr(self.model, "predictor", None)
-        trackers = getattr(predictor, "trackers", None) if predictor is not None else None
-        return trackers[0] if trackers else None
-
-    def restore_tracker_state(self, state: Any) -> None:
-        """Restore tracker/GMC state from a prior get_tracker_state().
-
-        For tiles>1 the manually-driven tracker is replaced directly. For
-        tiles==1, ultralytics only creates its internal tracker lazily on the
-        first track() call, so this bootstraps that plumbing with a throwaway
-        black-frame call (result discarded) before injecting the restored state.
-        """
-        if self.tiles > 1:
-            self._manual_tracker = state
-            return
-        predictor = getattr(self.model, "predictor", None)
-        if predictor is None or not getattr(predictor, "trackers", None):
-            dummy = np.zeros((64, 64, 3), dtype=np.uint8)
-            self.track(dummy)
-        self.model.predictor.trackers[0] = state
-
     def reset_tracker(self) -> None:
         """Reset BoT-SORT state after a scene cut (file loop, source glitch)."""
         try:
-            if self._manual_tracker is not None:
-                self._manual_tracker.reset()
-            for tr in getattr(self.model.predictor, "trackers", []) or []:
-                tr.reset()
+            self._manual_tracker.reset()
         except Exception:
             pass  # best effort; tracker re-syncs within a few frames anyway
 
     def track(self, frame_bgr: np.ndarray) -> list[Detection]:
-        if self.tiles > 1:
-            return self._track_tiled(frame_bgr)
-        res = self.model.track(
-            frame_bgr,
-            persist=True,
-            tracker=self.tracker_yaml,
-            imgsz=self.imgsz,
-            conf=self.conf,
-            iou=self.iou,
-            classes=self.wanted,
-            device=self.device,
-            verbose=False,
-        )[0]
+        """Run inference then advance the tracker — the normal per-frame path."""
+        h, w = frame_bgr.shape[:2]
+        det = self._predict_boxes(frame_bgr, h, w)
+        return self.step_tracker(det, frame_bgr)
+
+    def step_tracker(self, det: Any, frame_bgr: np.ndarray) -> list[Detection]:
+        """Advance ONLY the tracker on a prebuilt detections array (no inference).
+
+        The replay primitive: on resume, feeding already-persisted detections
+        through this call (for frames [0, resume_point)) reproduces the same
+        tracker.update() sequence an uninterrupted run performed, so
+        tracker/GMC state at the resume point matches by construction —
+        without re-running the expensive inference step.
+        """
+        tracks = self._manual_tracker.update(det, frame_bgr)
         out: list[Detection] = []
-        if res.boxes is None or len(res.boxes) == 0:
-            return out
-        boxes = res.boxes
-        xyxy = boxes.xyxy.cpu().numpy()
-        cls = boxes.cls.cpu().numpy().astype(int)
-        conf = boxes.conf.cpu().numpy()
-        ids = boxes.id.cpu().numpy().astype(int) if boxes.id is not None else [None] * len(cls)
-        for i in range(len(cls)):
-            c = int(cls[i])
+        for row in tracks:
+            x0, y0, x1, y1, tid, conf, cls = (float(v) for v in row[:7])
+            c = int(cls)
             out.append(
                 Detection(
-                    track_id=None if ids[i] is None else int(ids[i]),
+                    track_id=int(tid),
                     cls_name=self.names.get(c, str(c)),
-                    conf=float(conf[i]),
-                    xyxy=tuple(float(v) for v in xyxy[i]),
+                    conf=conf,
+                    xyxy=(x0, y0, x1, y1),
                     is_human=c in self.human_ids,
                     is_threat=c in self.threat_ids,
                 )
             )
         return out
 
-    def _track_tiled(self, frame_bgr: np.ndarray) -> list[Detection]:
-        """NxN tiled prediction, global NMS merge, manual BoT-SORT update."""
+    def build_replay_boxes(self, records: list[dict[str, Any]], shape: tuple[int, int]) -> Any:
+        """Build a detections array from persisted detection records
+        (xyxy_raw + conf + cls) in the same format `_predict_boxes` produces,
+        for feeding into `step_tracker` during resume replay warm-up."""
+        import torch
+        from ultralytics.engine.results import Boxes
+
+        if not records:
+            data = torch.zeros((0, 6))
+        else:
+            rows = []
+            for r in records:
+                x0, y0, x1, y1 = r["xyxy_raw"]
+                rows.append([x0, y0, x1, y1, float(r["conf"]), float(self._cls_id(r["cls"]))])
+            data = torch.tensor(rows, dtype=torch.float32)
+        return Boxes(data, orig_shape=shape).cpu().numpy()
+
+    def _cls_id(self, cls_name: str) -> int:
+        for i, n in self.names.items():
+            if n == cls_name:
+                return i
+        return -1
+
+    def _predict_boxes(self, frame_bgr: np.ndarray, h: int, w: int) -> Any:
+        """NxN tiled prediction + global NMS merge (n=1 is a single full-frame tile)."""
         import torch
         from ultralytics.engine.results import Boxes
 
         from analysis.tiling import nms_merge, tile_grid
 
-        h, w = frame_bgr.shape[:2]
         boxes: list[list[float]] = []
         scores: list[float] = []
         classes: list[int] = []
@@ -187,21 +172,4 @@ class Detector:
             data = torch.tensor(
                 [[*boxes[i], scores[i], float(classes[i])] for i in keep], dtype=torch.float32
             )
-        det = Boxes(data, orig_shape=(h, w)).cpu().numpy()
-        tracks = self._manual_tracker.update(det, frame_bgr)
-
-        out: list[Detection] = []
-        for row in tracks:
-            x0, y0, x1, y1, tid, conf, cls = (float(v) for v in row[:7])
-            c = int(cls)
-            out.append(
-                Detection(
-                    track_id=int(tid),
-                    cls_name=self.names.get(c, str(c)),
-                    conf=conf,
-                    xyxy=(x0, y0, x1, y1),
-                    is_human=c in self.human_ids,
-                    is_threat=c in self.threat_ids,
-                )
-            )
-        return out
+        return Boxes(data, orig_shape=(h, w)).cpu().numpy()

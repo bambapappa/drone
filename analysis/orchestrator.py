@@ -71,7 +71,13 @@ class OfflineConfig:
     model: str = "yolo11n.pt"
     device: str = "cpu"
     imgsz: int = 640
-    conf: float = 0.30
+    # Inference-time cutoff for what P1 persists. Deliberately matches BoT-SORT's
+    # track_low_thresh (analysis/trackers/botsort_drone.yaml) rather than a
+    # display-quality threshold, so P2's low-score second-association (BYTE)
+    # bucket — [track_low_thresh, track_high_thresh) — actually receives data.
+    # Filtering for display/analysis is a separate, higher threshold: display_conf.
+    detect_conf: float = 0.08
+    display_conf: float = 0.30
     iou: float = 0.50
     tiles: int = 1
     human_classes: set[str] = field(default_factory=lambda: {"person", "pedestrian", "people"})
@@ -118,7 +124,8 @@ class OfflineConfig:
             "model": self.model,
             "device": self.device,
             "imgsz": self.imgsz,
-            "conf": self.conf,
+            "detect_conf": self.detect_conf,
+            "display_conf": self.display_conf,
             "iou": self.iou,
             "tiles": self.tiles,
             "human_classes": sorted(self.human_classes),
@@ -292,7 +299,7 @@ class OfflineOrchestrator:
             model_path=self.config.model,
             device=self.config.device,
             imgsz=self.config.imgsz,
-            conf=self.config.conf,
+            conf=self.config.detect_conf,
             iou=self.config.iou,
             human_classes=self.config.human_classes,
             threat_classes=self.config.threat_classes,
@@ -301,12 +308,14 @@ class OfflineOrchestrator:
 
         total_frames = self.meta.total_frames
         processed = 0
+        ended_early_at: int | None = None
         t_start = _time.monotonic()
 
         try:
             for frame_no in range(start_frame, total_frames):
                 frame = frame_store.read()
                 if frame is None:
+                    ended_early_at = frame_no
                     break
 
                 # Video time (the timebase swap: wall-clock → video seconds)
@@ -382,7 +391,11 @@ class OfflineOrchestrator:
             "elapsed_s": round(elapsed, 1),
             "fps_effective": round(processed / max(elapsed, 0.001), 1),
         }
-        self.store.record_pass_complete(pass_name, stats)
+        if ended_early_at is not None:
+            msg = f"decode ended early at frame {ended_early_at} of {total_frames}"
+            self.store.record_pass_error(pass_name, msg)
+        else:
+            self.store.record_pass_complete(pass_name, stats)
 
     # ---- P2: Tracking pass (always a full re-run, never checkpointed) ----
 

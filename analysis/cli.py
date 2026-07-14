@@ -3,8 +3,8 @@
 
 Usage:
     analyze <video> [--output DIR] [--model PATH] [--device DEVICE]
-                    [--imgsz N] [--conf F] [--tiles N] [--seed N]
-                    [--resume RUN_ID | --resume latest]
+                    [--imgsz N] [--detect-conf F] [--display-conf F]
+                    [--tiles N] [--seed N] [--resume RUN_ID | --resume latest]
 
 Runs ingest + P1 (detection) + P2 (tracking) end-to-end. The analysis
 sidecar is written to <output>/<run_id>/ with manifest.json, frames/,
@@ -51,7 +51,20 @@ def main() -> None:
     ap.add_argument("--model", default=None, help="YOLO model path (default: yolo11n.pt)")
     ap.add_argument("--device", default="cpu", help="Torch device (cpu, mps, cuda:0)")
     ap.add_argument("--imgsz", type=int, default=640, help="Inference image size")
-    ap.add_argument("--conf", type=float, default=0.30, help="Confidence threshold")
+    ap.add_argument(
+        "--detect-conf",
+        type=float,
+        default=0.08,
+        help="Inference-time confidence cutoff for what P1 persists (matches BoT-SORT's "
+        "track_low_thresh so P2's low-score association bucket has data). Not a display filter.",
+    )
+    ap.add_argument(
+        "--display-conf",
+        type=float,
+        default=0.30,
+        help="Downstream display/analysis confidence threshold, recorded in the manifest "
+        "for provenance. Applied by consumers, not at inference time.",
+    )
     ap.add_argument("--iou", type=float, default=0.50, help="IoU threshold")
     ap.add_argument("--tiles", type=int, default=1, help="NxN tiled inference (1=off)")
     ap.add_argument("--seed", type=int, default=42, help="Random seed for determinism")
@@ -84,7 +97,7 @@ def main() -> None:
     print(f"Model:            {args.model or 'yolo11n.pt'}")
     print(f"Device:           {args.device}")
     print(f"Resolution:       {args.imgsz}")
-    print(f"Conf/IoU:         {args.conf}/{args.iou}")
+    print(f"Detect/Display conf/IoU: {args.detect_conf}/{args.display_conf}/{args.iou}")
     print(f"Tiles:            {args.tiles}")
     print(f"Seed:             {args.seed}")
     print(f"Track buffer:     {args.track_buffer_s}s")
@@ -123,7 +136,8 @@ def main() -> None:
         model=args.model or os.environ.get("MODEL", "yolo11n.pt"),
         device=args.device,
         imgsz=args.imgsz,
-        conf=args.conf,
+        detect_conf=args.detect_conf,
+        display_conf=args.display_conf,
         iou=args.iou,
         tiles=args.tiles,
         seed=args.seed,
@@ -178,6 +192,17 @@ def main() -> None:
     eff = stats.get("fps_effective", 0)
     print(f"  Effective fps:  {eff}")
     print()
+
+    p1_status = pass_info.get("status")
+    if p1_status != "complete":
+        print(
+            f"Error: P1 detection did not complete (status: {p1_status}"
+            f"{', ' + pass_info['error'] if pass_info.get('error') else ''}); "
+            "refusing to run P2 over an incomplete artifact.",
+            file=sys.stderr,
+        )
+        store.close()
+        sys.exit(1)
 
     # ---- P2 Tracking Pass (always a full re-run, never checkpointed) ----
     print("--- P2 Tracking ---")

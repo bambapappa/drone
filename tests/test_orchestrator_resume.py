@@ -202,6 +202,31 @@ class TestInterruptedResume:
             assert resumed_frames == baseline_frames
             assert resumed_dets == baseline_dets
 
+    def test_early_decode_end_marks_pass_error_not_complete(self, monkeypatch):
+        """If the video decode ends before meta.total_frames is reached (frame
+        is None mid-loop), the pass must be recorded as an error, not
+        'complete' with a partial frame count — otherwise the CLI's P1-status
+        gate would be fooled into running P2 over a truncated artifact."""
+        import dataclasses
+
+        monkeypatch.setattr("analysis.detector.Detector", FakeDetector)
+        with tempfile.TemporaryDirectory() as tmp:
+            vpath = _make_test_video(f"{tmp}/test.mp4", n_frames=8)
+            meta = _make_meta(vpath)
+            # Overstate total_frames so FrameStore.read() runs out early and
+            # returns None before the loop reaches the declared frame count.
+            meta = dataclasses.replace(meta, total_frames=meta.total_frames + 5)
+            config = OfflineConfig(seed=1)
+
+            store = ArtifactStore(f"{tmp}/out", meta.video_hash, "cfg")
+            store.create()
+            OfflineOrchestrator(meta, store, config).run_pass_p1()
+
+            pass_info = store._manifest["passes"][OfflineOrchestrator.P1_PASS_NAME]
+            assert pass_info["status"] == "error"
+            assert "error" in pass_info
+            assert "stats" not in pass_info
+
     def test_resume_refuses_on_missing_run(self):
         with tempfile.TemporaryDirectory() as tmp:
             with pytest.raises(ResumeValidationError):

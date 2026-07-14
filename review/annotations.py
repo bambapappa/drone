@@ -60,7 +60,6 @@ BOOKMARKS = "bookmarks"
 SCREENSHOTS = "screenshots"
 VERDICTS = "verdicts"
 OPERATOR_NOTES = "operator_notes"
-PHASE2_KINDS = (BOOKMARKS, SCREENSHOTS)
 # Entity-per-row kinds: one row = one thing, tombstone-deletable, exactly
 # like bookmarks/screenshots. Verdicts are NOT in this set — they are keyed
 # by event_id with latest-row-wins semantics instead (see `all_verdicts`).

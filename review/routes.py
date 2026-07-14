@@ -225,7 +225,7 @@ async def get_event(
 async def set_event_review(
     run_id: str,
     event_id: str,
-    state: str | None = Form(None),
+    state: str | None = Form(None, max_length=20),
     note: str | None = Form(None, max_length=4000),
     reviewer: str | None = Form(None, max_length=200),
     settings: ReviewSettings = Depends(get_settings),

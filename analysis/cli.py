@@ -5,10 +5,11 @@ Usage:
     analyze <video> [--output DIR] [--model PATH] [--device DEVICE]
                     [--imgsz N] [--detect-conf F] [--display-conf F]
                     [--tiles N] [--seed N] [--resume RUN_ID | --resume latest]
+                    [--reid-weights PATH] [--reid-floor N] [--no-p3]
 
-Runs ingest + P1 (detection) + P2 (tracking) end-to-end. The analysis
-sidecar is written to <output>/<run_id>/ with manifest.json, frames/,
-detections/, tracklets/, and checkpoints/.
+Runs ingest + P1 (detection) + P2 (tracking) + P3 (identity) end-to-end. The
+analysis sidecar is written to <output>/<run_id>/ with manifest.json, frames/,
+detections/, tracklets/, persons/, and checkpoints/.
 
 P1 is stateless and checkpointed/resumable: by default every invocation
 mints a fresh run_id and a fresh sidecar — re-running the same command does
@@ -22,6 +23,14 @@ config, code, or tracker-library change.
 P2 always re-runs in full (it is cheap and deterministic given P1's
 persisted detections) — it is never checkpointed and --resume does not
 affect it.
+
+P3 (identity) re-associates P2's tracklets into persons via global
+agglomerative clustering gated by temporal-overlap exclusion, spatio-
+temporal plausibility, and appearance similarity. It always re-runs in full
+and is deterministic given the same P1+P2 output. The reported unique-person
+count is honestly uncertainty-banded ("N unika, varav M osäkra
+sammanslagningar") — same-clothing confusion is a fundamental appearance-
+method limit (DECISIONS B4) that the tool surfaces rather than hides.
 """
 
 from __future__ import annotations
@@ -73,6 +82,28 @@ def main() -> None:
         type=float,
         default=8.0,
         help="Track buffer in video seconds (BoT-SORT track_buffer = fps × this)",
+    )
+    ap.add_argument(
+        "--reid-weights",
+        default=None,
+        help="Path to a TorchScript ReID model (OSNet-class) for per-detection "
+        "appearance embeddings. Absent → HSV-only embeddings (weaker but "
+        "functional); present → OSNet primary with HSV fallback below the crop "
+        "floor. Recorded in the manifest for provenance.",
+    )
+    ap.add_argument(
+        "--reid-floor",
+        type=int,
+        default=32,
+        help="Min crop side (px) below which the HSV fallback fires for the ReID "
+        "embedder (10 px people at altitude are below any ReID model's input).",
+    )
+    ap.add_argument(
+        "--no-p3",
+        action="store_true",
+        help="Stop after P1+P2 (detection+tracking) without running the P3 "
+        "identity pass. By default P3 runs and the honest unique-person count "
+        "is reported.",
     )
     ap.add_argument(
         "--resume",
@@ -142,6 +173,8 @@ def main() -> None:
         tiles=args.tiles,
         seed=args.seed,
         track_buffer_s=args.track_buffer_s,
+        reid_weights=args.reid_weights,
+        reid_floor=args.reid_floor,
     )
 
     config_hash = ArtifactStore.config_hash_from_settings(config.to_dict())
@@ -214,6 +247,48 @@ def main() -> None:
     print(f"  Tracklet rows:  {p2_stats.get('total_tracklet_rows', '?')}")
     print(f"  Time:           {p2_stats.get('elapsed_s', '?')}s")
     print(f"  Effective fps:  {p2_stats.get('fps_effective', 0)}")
+
+    if args.no_p3:
+        store.close()
+        total_elapsed = time.monotonic() - t0
+        print()
+        print(f"Total: {total_elapsed:.1f}s")
+        print(f"Sidecar: {store.run_dir}")
+        return
+
+    # ---- P3 Identity Pass (global tracklet association) ----
+    print()
+    print("--- P3 Identity ---")
+    result = orchestrator.run_pass_p3()
+
+    if result is None:
+        p3_info = store._manifest.get("passes", {}).get(OfflineOrchestrator.P3_PASS_NAME, {})
+        print(
+            f"Error: P3 did not run ({p3_info.get('error', 'unknown')}).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    p3_info = store._manifest.get("passes", {}).get(OfflineOrchestrator.P3_PASS_NAME, {})
+    p3_stats = p3_info.get("stats", {})
+    print(f"  Tracklets in:   {p3_stats.get('tracklets_in', '?')}")
+    print(f"  Persons:        {p3_stats.get('persons_out', '?')}")
+    print(f"  Time:           {p3_stats.get('elapsed_s', '?')}s")
+    print()
+    # Honest unique-person count: confirmed persons + an uncertainty band from
+    # below-threshold / gate-blocked near-merges. Same-clothing confusion is a
+    # fundamental limit of any appearance method (DECISIONS B4) — the tool's
+    # job is to surface the ambiguity, never hide it behind one precise number.
+    confirmed = result.confirmed_count
+    uncertain = result.uncertain_merges
+    if uncertain:
+        print(f"Unika personer:   {confirmed} unika, varav {uncertain} osäkra sammanslagningar")
+    else:
+        print(f"Unika personer:   {confirmed} unika")
+    print(
+        f"  (totalt {len(result.persons)} identiteter, varav "
+        f"{len(result.persons) - confirmed} transienta < {config.p3_confirm_s:g}s)"
+    )
 
     store.close()
     total_elapsed = time.monotonic() - t0

@@ -16,8 +16,10 @@ services:
     build: .
     # The analyze command runs the analysis CLI script.
     entrypoint: ["python", "-m", "analysis.cli"]
+    working_dir: /analysis-output
     environment:
       - MODEL=${MODEL:-yolo11n.pt}
+      - PYTHONPATH=/app
     volumes:
       - ./videos:/videos:ro          # input videos (read-only)
       - ./analysis-output:/analysis-output  # sidecar output

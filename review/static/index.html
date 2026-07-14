@@ -50,12 +50,26 @@
     </nav>
 
     <aside id="sidebar">
-      <section class="card">
+      <nav id="sidebar-tabs">
+        <button class="tab on" data-tab="events">Granskning</button>
+        <button class="tab" data-tab="bookmarks">Bokmärken</button>
+        <button class="tab" data-tab="screenshots">Skärmdumpar</button>
+        <button class="tab" data-tab="operator">Operatör</button>
+      </nav>
+
+      <section class="card tab-pane" data-pane="events">
         <h3>Händelselogg</h3>
-        <ul id="event-list" class="scroll-list"><li class="dim">Inga händelser.</li></ul>
+        <div class="review-controls">
+          <select id="event-sort">
+            <option value="time">Sortera: tid</option>
+            <option value="confidence">Sortera: konfidens</option>
+          </select>
+          <button type="button" id="btn-next-unreviewed" class="small">Nästa ogranskad</button>
+        </div>
+        <ul id="event-list" class="scroll-list grow"><li class="dim">Inga händelser.</li></ul>
       </section>
 
-      <section class="card">
+      <section class="card tab-pane hidden" data-pane="bookmarks">
         <h3>Bokmärken</h3>
         <ul id="bookmark-list" class="scroll-list"><li class="dim">Inga bokmärken.</li></ul>
         <form id="bookmark-form" class="inline-form hidden">
@@ -66,9 +80,34 @@
         </form>
       </section>
 
-      <section class="card">
+      <section class="card tab-pane hidden" data-pane="screenshots">
         <h3>Skärmdumpar</h3>
         <ul id="screenshot-list" class="scroll-list"><li class="dim">Inga skärmdumpar.</li></ul>
+      </section>
+
+      <section class="card tab-pane hidden" data-pane="operator">
+        <h3>Operatörens fältanteckningar</h3>
+        <form id="operator-import-form" class="inline-form">
+          <textarea id="operator-import-text" rows="4"
+            placeholder="Klistra in fältanteckningar, t.ex.:&#10;2 personer vid fordonet, 14:32&#10;rök vid ladan, 15:10"></textarea>
+          <button type="submit" class="primary small">Importera</button>
+        </form>
+        <ul id="operator-warnings" class="scroll-list hidden"></ul>
+        <ul id="operator-note-list" class="scroll-list"><li class="dim">Inga anteckningar importerade.</li></ul>
+
+        <h3>Jämförelse mot AI</h3>
+        <div class="review-controls">
+          <label for="tolerance-input">Tidstolerans (s)</label>
+          <input type="number" id="tolerance-input" min="0" step="1" value="60">
+          <button type="button" id="btn-refresh-comparison" class="small">Uppdatera</button>
+        </div>
+        <div class="summary" id="compare-stats">
+          <div class="stat"><b id="cmp-both">–</b><small>hittad av båda</small></div>
+          <div class="stat"><b id="cmp-ai-only">–</b><small>endast AI</small></div>
+          <div class="stat"><b id="cmp-op-only">–</b><small>endast operatör</small></div>
+        </div>
+        <ul id="compare-list" class="scroll-list grow"><li class="dim">Ingen jämförelse ännu.</li></ul>
+        <button type="button" id="btn-export-debrief" class="primary small">Exportera debrief (HTML)</button>
       </section>
     </aside>
   </main>

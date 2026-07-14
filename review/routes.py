@@ -1,13 +1,13 @@
 """REST API for the review UI.
 
-Two groups of endpoints, mirroring the architecture report's interface rule
+Three groups of endpoints, mirroring the architecture report's interface rule
 ("the UI touches only the artifact + annotation REST API, never the engine"):
 
   Artifact reads (engine output, immutable from the UI's perspective):
     GET  /api/runs                                 — list runs
     GET  /api/runs/{rid}                           — run summary (manifest)
-    GET  /api/runs/{rid}/events                    — P5 events log
-    GET  /api/runs/{rid}/events/{eid}              — single event
+    GET  /api/runs/{rid}/events                    — P5 events log (review state merged in)
+    GET  /api/runs/{rid}/events/{eid}              — single event (review state merged in)
     GET  /api/runs/{rid}/tracklets?frame=N         — per-frame boxes for overlay
     GET  /api/runs/{rid}/persons                   — P3 persons
     GET  /api/runs/{rid}/frames/meta?from=N&to=N   — PTS index slice
@@ -21,6 +21,14 @@ Two groups of endpoints, mirroring the architecture report's interface rule
     POST   /api/runs/{rid}/screenshots             — add screenshot (multipart)
     GET    /api/runs/{rid}/screenshots/{aid}/png   — serve stored PNG
     DELETE /api/runs/{rid}/screenshots/{aid}       — tombstone screenshot
+    POST   /api/runs/{rid}/events/{eid}/review     — confirm/reject/note an event (Phase 3)
+
+  Evaluation layer (Phase 3 — report §2.4/§5.2-3, the requirement-7 workflow):
+    POST   /api/runs/{rid}/operator-notes/import   — parse + store field notes
+    GET    /api/runs/{rid}/operator-notes          — list imported notes
+    DELETE /api/runs/{rid}/operator-notes/{aid}    — tombstone one imported note
+    GET    /api/runs/{rid}/comparison              — AI-vs-operator 3-bucket comparison
+    GET    /api/runs/{rid}/debrief                 — standalone HTML debrief export
 
 Path traversal guards: run_id and annotation_id are validated strictly
 (alphanumeric + dash/underscore) before touching the filesystem — the
@@ -34,6 +42,7 @@ import csv
 import io
 import json
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -43,7 +52,10 @@ from fastapi.responses import FileResponse, JSONResponse
 from analysis.orchestrator import OfflineOrchestrator
 from analysis.store import ArtifactStore
 from review.annotations import AnnotationStore
+from review.comparison import DEFAULT_TOLERANCE_S, compare_events_to_notes
 from review.config import ReviewSettings, get_settings
+from review.debrief import render_debrief_html
+from review.operator_notes import parse_operator_notes
 
 router = APIRouter(prefix="/api")
 
@@ -76,6 +88,26 @@ def _resolve_run(settings: ReviewSettings, run_id: str) -> Path:
 
 def _open_store(settings: ReviewSettings, run_id: str) -> ArtifactStore:
     return ArtifactStore.open_readonly(_resolve_run(settings, run_id))
+
+
+def _merge_verdict(event: dict[str, Any], verdict: dict[str, Any] | None) -> dict[str, Any]:
+    """Overlay a human verdict onto an engine-persisted event's `review`
+    field for API responses. The engine writes events/<pass>.jsonl's
+    `review` once (frozen at "unreviewed") and never touches it again —
+    confirm/reject/note writes live in the annotations layer's separate
+    `verdicts` log instead (see review/annotations.py's module docstring).
+    This function is where the two are stitched back together for readers;
+    it never writes anything back to the events table."""
+    if verdict is None:
+        return event
+    event = dict(event)
+    event["review"] = {
+        "state": verdict.get("state", "unreviewed"),
+        "note": verdict.get("note"),
+        "reviewer": verdict.get("reviewer"),
+        "reviewed_at": verdict.get("created_at"),
+    }
+    return event
 
 
 def _resolve_video_path(settings: ReviewSettings, store: ArtifactStore) -> Path | None:
@@ -160,12 +192,18 @@ async def get_run(run_id: str, settings: ReviewSettings = Depends(get_settings))
 
 @router.get("/runs/{run_id}/events")
 async def get_events(run_id: str, settings: ReviewSettings = Depends(get_settings)) -> dict[str, Any]:
-    """Full P5 event log in onset order (P5 persists them in this order)."""
+    """Full P5 event log in onset order (P5 persists them in this order).
+
+    Each event's `review` field reflects the latest human verdict (Phase 3),
+    overlaid at read time from the annotations layer — see `_merge_verdict`.
+    """
     store = _open_store(settings, run_id)
     p5 = OfflineOrchestrator.P5_PASS_NAME
     if store.manifest.get("passes", {}).get(p5, {}).get("status") != "complete":
         raise HTTPException(status_code=409, detail="P5 har inte körts för den här körningen")
     events = list(store.iter_events(p5))
+    verdicts = _annotation_store(settings, run_id).all_verdicts()
+    events = [_merge_verdict(ev, verdicts.get(ev["event_id"])) for ev in events]
     return {"events": events, "count": len(events)}
 
 
@@ -178,8 +216,40 @@ async def get_event(
     p5 = OfflineOrchestrator.P5_PASS_NAME
     for ev in store.iter_events(p5):
         if ev.get("event_id") == event_id:
-            return ev
+            verdict = _annotation_store(settings, run_id).get_verdict(event_id)
+            return _merge_verdict(ev, verdict)
     raise HTTPException(status_code=404, detail="okänd händelse")
+
+
+@router.post("/runs/{run_id}/events/{event_id}/review")
+async def set_event_review(
+    run_id: str,
+    event_id: str,
+    state: str | None = Form(None, max_length=20),
+    note: str | None = Form(None, max_length=4000),
+    reviewer: str | None = Form(None, max_length=200),
+    settings: ReviewSettings = Depends(get_settings),
+) -> dict[str, Any]:
+    """Confirm/reject/note one event (Phase 3 review queue).
+
+    Any field left out carries forward its previous value (see
+    AnnotationStore.set_verdict) — the UI can submit a note-only edit
+    without resending the current state, or a state change without
+    clobbering an existing note. This writes to the annotations layer's
+    `verdicts` log, never to events/<pass>.jsonl."""
+    _validate_id(event_id, pattern=_EVENT_ID_RE, label="event_id")
+    store = _open_store(settings, run_id)
+    p5 = OfflineOrchestrator.P5_PASS_NAME
+    if store.manifest.get("passes", {}).get(p5, {}).get("status") != "complete":
+        raise HTTPException(status_code=409, detail="P5 har inte körts för den här körningen")
+    if not any(ev.get("event_id") == event_id for ev in store.iter_events(p5)):
+        raise HTTPException(status_code=404, detail="okänd händelse")
+    try:
+        return _annotation_store(settings, run_id).set_verdict(
+            event_id, state=state, note=note, reviewer=reviewer
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get("/runs/{run_id}/tracklets")
@@ -430,3 +500,112 @@ async def delete_screenshot(
     if not ok:
         raise HTTPException(status_code=404, detail="skärmdumpen finns inte")
     return {"deleted": aid}
+
+
+# ---- Phase 3: operator-notes import ----
+
+
+@router.post("/runs/{run_id}/operator-notes/import", status_code=201)
+async def import_operator_notes(
+    run_id: str,
+    text: str = Form(..., min_length=1, max_length=200_000),
+    settings: ReviewSettings = Depends(get_settings),
+) -> dict[str, Any]:
+    """Parse and store a blob of operator field notes.
+
+    See review/operator_notes.py for the accepted (deliberately forgiving)
+    format. Best-effort: unparseable lines are reported as warnings rather
+    than failing the whole import — one garbled line, transcribed under
+    time pressure, must never lose the rest of a field report."""
+    _resolve_run(settings, run_id)
+    result = parse_operator_notes(text)
+    ann = _annotation_store(settings, run_id)
+    imported = [ann.add_operator_note(t=n.t, text=n.text, raw_line=n.raw_line) for n in result.notes]
+    return {
+        "imported": imported,
+        "warnings": [
+            {"line": w.line_no, "raw_line": w.raw_line, "reason": w.reason} for w in result.warnings
+        ],
+    }
+
+
+@router.get("/runs/{run_id}/operator-notes")
+async def get_operator_notes(run_id: str, settings: ReviewSettings = Depends(get_settings)) -> dict[str, Any]:
+    notes = _annotation_store(settings, run_id).list_operator_notes()
+    return {"notes": notes, "count": len(notes)}
+
+
+@router.delete("/runs/{run_id}/operator-notes/{aid}", status_code=200)
+async def delete_operator_note(
+    run_id: str, aid: str, settings: ReviewSettings = Depends(get_settings)
+) -> dict[str, Any]:
+    _validate_id(aid, label="annotation_id")
+    ok = _annotation_store(settings, run_id).delete_operator_note(aid)
+    if not ok:
+        raise HTTPException(status_code=404, detail="observationen finns inte")
+    return {"deleted": aid}
+
+
+# ---- Phase 3: AI-vs-operator comparison + HTML debrief ----
+
+
+def _load_events_and_notes(
+    settings: ReviewSettings, run_id: str
+) -> tuple[ArtifactStore, list[dict[str, Any]], list[dict[str, Any]]]:
+    """Shared read path for /comparison and /debrief: P5 events (with the
+    latest verdict overlaid) + live imported operator notes."""
+    store = _open_store(settings, run_id)
+    p5 = OfflineOrchestrator.P5_PASS_NAME
+    if store.manifest.get("passes", {}).get(p5, {}).get("status") != "complete":
+        raise HTTPException(status_code=409, detail="P5 har inte körts för den här körningen")
+    ann = _annotation_store(settings, run_id)
+    verdicts = ann.all_verdicts()
+    events = [_merge_verdict(ev, verdicts.get(ev["event_id"])) for ev in store.iter_events(p5)]
+    notes = ann.list_operator_notes()
+    return store, events, notes
+
+
+@router.get("/runs/{run_id}/comparison")
+async def get_comparison(
+    run_id: str,
+    tolerance_s: float = Query(DEFAULT_TOLERANCE_S, ge=0),
+    settings: ReviewSettings = Depends(get_settings),
+) -> dict[str, Any]:
+    """Three-bucket AI-vs-operator comparison (report §5.3): found by both /
+    AI-only / operator-only, with a signed time-to-detection delta on
+    matched pairs. Computed fresh on every call from the live events +
+    operator_notes — see review/comparison.py for the matching rules and
+    why the default tolerance is 60s."""
+    _, events, notes = _load_events_and_notes(settings, run_id)
+    result = compare_events_to_notes(events, notes, tolerance_s=tolerance_s)
+    return {
+        "tolerance_s": result.tolerance_s,
+        "counts": result.counts,
+        "both": [{"event": m.event, "note": m.note, "delta_s": m.delta_s} for m in result.both],
+        "ai_only": result.ai_only,
+        "operator_only": result.operator_only,
+    }
+
+
+@router.get("/runs/{run_id}/debrief", include_in_schema=False)
+async def get_debrief(
+    run_id: str,
+    tolerance_s: float = Query(DEFAULT_TOLERANCE_S, ge=0),
+    settings: ReviewSettings = Depends(get_settings),
+) -> Response:
+    """Standalone HTML training-debrief export (report §5.3's stated point
+    of the operator-comparison feature) — self-contained, no server needed
+    to view it. See review/debrief.py."""
+    store, events, notes = _load_events_and_notes(settings, run_id)
+    result = compare_events_to_notes(events, notes, tolerance_s=tolerance_s)
+    html = render_debrief_html(
+        run_id,
+        result,
+        generated_at=datetime.now(timezone.utc).isoformat(),
+        video_filename=store.manifest.get("video_filename"),
+    )
+    return Response(
+        content=html,
+        media_type="text/html",
+        headers={"Content-Disposition": f'attachment; filename="{run_id}_debrief.html"'},
+    )

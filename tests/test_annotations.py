@@ -120,22 +120,116 @@ class TestScreenshots:
         assert all(r["annotation_id"] != row["annotation_id"] for r in store.list_screenshots())
 
 
+class TestVerdicts:
+    """Confirm/reject/note on an event_id. Unlike bookmarks/screenshots,
+    verdicts are keyed by event_id with latest-row-wins semantics — there is
+    no delete, only new state transitions appended over time."""
+
+    def test_first_verdict_defaults_missing_fields(self, store: AnnotationStore):
+        row = store.set_verdict("stilla-000001", state="confirmed")
+        assert row["event_id"] == "stilla-000001"
+        assert row["state"] == "confirmed"
+        assert row["note"] is None
+        assert row["reviewer"] is None
+        assert "reviewed_at" not in row or "created_at" in row
+
+    def test_get_verdict_returns_none_when_unreviewed(self, store: AnnotationStore):
+        assert store.get_verdict("nonexistent") is None
+
+    def test_note_only_update_carries_forward_state(self, store: AnnotationStore):
+        store.set_verdict("ev-1", state="confirmed", reviewer="Anna")
+        row = store.set_verdict("ev-1", note="ser ut som en figurant")
+        assert row["state"] == "confirmed"
+        assert row["reviewer"] == "Anna"
+        assert row["note"] == "ser ut som en figurant"
+
+    def test_state_change_carries_forward_note(self, store: AnnotationStore):
+        store.set_verdict("ev-1", state="confirmed", note="ok")
+        row = store.set_verdict("ev-1", state="rejected")
+        assert row["state"] == "rejected"
+        assert row["note"] == "ok"
+
+    def test_get_verdict_returns_latest_of_several_transitions(self, store: AnnotationStore):
+        store.set_verdict("ev-1", state="confirmed")
+        store.set_verdict("ev-1", state="rejected")
+        store.set_verdict("ev-1", state="confirmed", note="ombedömd")
+        row = store.get_verdict("ev-1")
+        assert row["state"] == "confirmed"
+        assert row["note"] == "ombedömd"
+
+    def test_rejects_unknown_state(self, store: AnnotationStore):
+        with pytest.raises(ValueError):
+            store.set_verdict("ev-1", state="maybe")
+
+    def test_all_verdicts_keeps_only_latest_per_event(self, store: AnnotationStore):
+        store.set_verdict("ev-1", state="confirmed")
+        store.set_verdict("ev-2", state="rejected")
+        store.set_verdict("ev-1", state="rejected")
+        latest = store.all_verdicts()
+        assert set(latest.keys()) == {"ev-1", "ev-2"}
+        assert latest["ev-1"]["state"] == "rejected"
+        assert latest["ev-2"]["state"] == "rejected"
+
+    def test_verdict_log_is_append_only(self, store: AnnotationStore):
+        """Every set_verdict call appends a row — the full transition
+        history must be reconstructable, not overwritten in place."""
+        store.set_verdict("ev-1", state="confirmed")
+        store.set_verdict("ev-1", state="rejected")
+        raw = (store.annotations_dir / "verdicts.jsonl").read_text().strip().splitlines()
+        assert len(raw) == 2
+        states = [json.loads(line)["state"] for line in raw]
+        assert states == ["confirmed", "rejected"]
+
+
+class TestOperatorNotes:
+    def test_add_operator_note_returns_row_with_id(self, store: AnnotationStore):
+        row = store.add_operator_note(
+            t=872.0, text="2 personer vid fordonet", raw_line="2 personer vid fordonet, 14:32"
+        )
+        assert "annotation_id" in row
+        assert row["t"] == 872.0
+        assert row["text"] == "2 personer vid fordonet"
+        assert row["raw_line"] == "2 personer vid fordonet, 14:32"
+
+    def test_list_operator_notes_returns_live_only(self, store: AnnotationStore):
+        store.add_operator_note(t=1.0, text="a")
+        store.add_operator_note(t=2.0, text="b")
+        assert len(store.list_operator_notes()) == 2
+
+    def test_delete_operator_note_tombstones(self, store: AnnotationStore):
+        a = store.add_operator_note(t=1.0, text="a")
+        store.add_operator_note(t=2.0, text="b")
+        assert store.delete_operator_note(a["annotation_id"]) is True
+        rows = store.list_operator_notes()
+        assert len(rows) == 1
+        assert rows[0]["text"] == "b"
+
+    def test_delete_operator_note_idempotent(self, store: AnnotationStore):
+        a = store.add_operator_note(t=1.0, text="a")
+        assert store.delete_operator_note(a["annotation_id"]) is True
+        assert store.delete_operator_note(a["annotation_id"]) is False
+
+
 class TestBulk:
     def test_all_annotations_groups_by_kind(self, store: AnnotationStore):
         store.add_bookmark(t=1.0, label="b1")
         store.add_screenshot(t=2.0, label="s1")
+        store.add_operator_note(t=3.0, text="n1")
         payload = store.all_annotations()
-        assert set(payload.keys()) == {"bookmarks", "screenshots"}
+        assert set(payload.keys()) == {"bookmarks", "screenshots", "operator_notes"}
         assert len(payload["bookmarks"]) == 1
         assert len(payload["screenshots"]) == 1
+        assert len(payload["operator_notes"]) == 1
 
     def test_export_payload_returns_live_entries(self, store: AnnotationStore):
         a = store.add_bookmark(t=1.0, label="b1")
         store.add_screenshot(t=2.0, label="s1")
+        store.add_operator_note(t=3.0, text="n1")
         store.delete_bookmark(a["annotation_id"])
         payload = store.export_payload()
         assert payload["bookmarks"] == []
         assert len(payload["screenshots"]) == 1
+        assert len(payload["operator_notes"]) == 1
 
 
 class TestIsolationFromEngine:

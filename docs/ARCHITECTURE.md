@@ -127,3 +127,21 @@ canvas → PNG) — det finns bara en annoterad-bild-renderare, `snapshot.py`
 verktyg för realtidspipelinen. Körs via `uvicorn review.main:app` eller
 `docker compose -f docker-compose.yml -f docker-compose.offline.yml up
 review` (port 8001). Detaljer i [AGENTS.md](../AGENTS.md).
+
+### Utvärderingslager (fas 3)
+
+Tre nya rena moduler ovanpå samma artefakt + `annotations/`-logg, ingen av
+dem rör analysmotorn:
+
+| Fil | Ansvar |
+|---|---|
+| `review/operator_notes.py` | Tolkar en inklistrad/uppladdad textklump av operatörens fältanteckningar till `(t, text)`-rader. Överseende med format (se modulens docstring): tid och text i valfri ordning, kommatecken *eller* semikolon som fältavskiljare, decimalkomma i sekunder, valfri CSV-rubrikrad, kommentarer/tomrader hoppas över. En rad som inte går att tolka blir en varning, inte ett avbrutet import. |
+| `review/comparison.py` | Parar ihop AI-händelser och importerade anteckningar på tidsnärhet (deterministisk giriga-närmast-par-algoritm, ingen textmatchning) till tre hinkar: hittad av båda / endast AI / endast operatör, med tidsskillnad för matchade par. Ren funktion — inget sparas, alltid samma resultat för samma indata. |
+| `review/debrief.py` | Renderar en fristående HTML-debriefingsrapport (inline CSS, ingen server behövs) från ett jämförelseresultat — svensk text rakt igenom, bildreferenser (`ruta N–M`) i stället för inbäddade miniatyrbilder (se modulens docstring för varför). |
+
+Granskningsbeslut (bekräfta/avvisa/kommentera) skrivs till
+`annotations/verdicts.jsonl` — **inte** till `events/<pass>.jsonl`, vars
+`review`-fält motorn skriver en gång och sedan aldrig rör (se
+`analysis/events.py`). API:t slår ihop det senaste verdiktet ovanpå
+händelsen vid läsning (`review/routes.py:_merge_verdict`); en omkörning av
+analysen skriver om `events/` men rör aldrig `annotations/`.

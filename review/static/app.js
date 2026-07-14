@@ -29,6 +29,13 @@ const CATEGORY_LABEL = {
   HAZARD: "FARA",
 };
 
+// ---------- i18n: review-verdict state → Swedish display label ----------
+const REVIEW_STATE_LABEL = {
+  unreviewed: "ogranskad",
+  confirmed: "bekräftad",
+  rejected: "avvisad",
+};
+
 // ---------- color tokens shared with the realtime PoC ----------
 const COLORS = {
   ok: "#2ecc71",
@@ -47,12 +54,14 @@ const state = {
   events: [],
   bookmarks: [],
   screenshots: [],
+  operatorNotes: [],
   frames: [],          // [{frame_no, pts_ms}] sorted window around the playhead
   frameStep: null,     // ms/frame, learned from the first loaded window
   boxesByFrame: null,  // lazy: Map<frame_no, box[]>
   trailCache: { from: null, to: null, frames: {} }, // sliding tracklet window
   activeEventId: null,
   layers: { boxes: true, ids: true, status: true, trails: false },
+  _reviewPauseHandler: null, // current jumpToEvent auto-pause listener, if any
 };
 
 // ---------- DOM ----------
@@ -116,13 +125,15 @@ async function loadRun(rid) {
   state.trailCache = { from: null, to: null, frames: {} };
 
   // 1. Run summary (drives UI visibility + video URL).
-  const [sumRes, annRes] = await Promise.all([
+  const [sumRes, annRes, opRes] = await Promise.all([
     fetch(`/api/runs/${rid}`).then((r) => r.json()),
     fetch(`/api/runs/${rid}/annotations`).then((r) => r.json()),
+    fetch(`/api/runs/${rid}/operator-notes`).then((r) => r.json()),
   ]);
   state.runSummary = sumRes;
   state.bookmarks = annRes.bookmarks || [];
   state.screenshots = annRes.screenshots || [];
+  state.operatorNotes = opRes.notes || [];
 
   $("#main-empty").hidden = true;
   $("#main-review").hidden = false;
@@ -157,7 +168,9 @@ async function loadRun(rid) {
   renderEvents();
   renderBookmarks();
   renderScreenshots();
+  renderOperatorNotes();
   updateStats();
+  refreshComparison();
 
   // 4. PTS index — bridges media-time (seconds) ↔ frame_no. We pull a
   // window around the current playhead on demand rather than the whole
@@ -444,8 +457,27 @@ document.querySelectorAll("#toggles .chip[data-layer]").forEach((btn) => {
 });
 
 // =====================================================================
-// Event list — jump-to-timestamp
+// Sidebar tabs
 // =====================================================================
+
+document.querySelectorAll("#sidebar-tabs .tab").forEach((btn) => {
+  btn.onclick = () => {
+    document.querySelectorAll("#sidebar-tabs .tab").forEach((b) => b.classList.toggle("on", b === btn));
+    document.querySelectorAll(".tab-pane").forEach((p) => p.classList.toggle("hidden", p.dataset.pane !== btn.dataset.tab));
+  };
+});
+
+// =====================================================================
+// Event list / review queue — jump-to-timestamp + confirm/reject/note
+// =====================================================================
+
+function sortedEvents() {
+  const mode = $("#event-sort") ? $("#event-sort").value : "time";
+  const list = [...state.events];
+  if (mode === "confidence") list.sort((a, b) => b.confidence - a.confidence);
+  else list.sort((a, b) => a.t_start - b.t_start);
+  return list;
+}
 
 function renderEvents() {
   const ul = $("#event-list");
@@ -459,33 +491,120 @@ function renderEvents() {
     ul.innerHTML = '<li class="dim">Inga händelser.</li>';
     return;
   }
-  ul.innerHTML = state.events.map((ev) => {
+  ul.innerHTML = sortedEvents().map((ev) => {
     const cls = state.activeEventId === ev.event_id ? "active" : "";
+    const review = ev.review || { state: "unreviewed", note: null };
     const cat = `<span class="cat-tag cat-${ev.category}">${CATEGORY_LABEL[ev.category] || ev.category}</span>`;
     const pid = ev.person_id != null ? `P${ev.person_id}` : "—";
     const dur = (ev.t_end - ev.t_start).toFixed(1);
     const meta = `<span class="meta">${fmtT(ev.t_start)} · ${dur}s · ${pid} · v ${ev.confidence.toFixed(2)}</span>`;
     const note = ev.evidence && ev.evidence.kind ? `<span class="note">typ: ${ev.evidence.kind}</span>` : "";
-    return `<li class="${cls}" data-event-id="${esc(ev.event_id)}">
+    const badge = `<span class="review-badge">${REVIEW_STATE_LABEL[review.state] || "ogranskad"}</span>`;
+    return `<li class="${cls} review-${esc(review.state)}" data-event-id="${esc(ev.event_id)}">
       <span class="label">${cat}</span>
       ${meta}
       ${note}
+      ${badge}
+      <div class="review-actions">
+        <button type="button" class="btn-confirm" data-id="${esc(ev.event_id)}">Bekräfta</button>
+        <button type="button" class="btn-reject" data-id="${esc(ev.event_id)}">Avvisa</button>
+        <button type="button" class="btn-note" data-id="${esc(ev.event_id)}">Anteckning</button>
+      </div>
+      <form class="note-form hidden" data-id="${esc(ev.event_id)}">
+        <input type="text" class="note-input" placeholder="Anteckning" maxlength="4000" value="${esc(review.note || "")}">
+        <button type="submit" class="primary">Spara</button>
+      </form>
     </li>`;
   }).join("");
   ul.querySelectorAll("li[data-event-id]").forEach((li) => {
-    li.onclick = () => jumpToEvent(li.dataset.eventId);
+    li.onclick = (e) => {
+      if (e.target.closest("button, input, form")) return;
+      jumpToEvent(li.dataset.eventId);
+    };
+  });
+  ul.querySelectorAll(".btn-confirm").forEach((btn) => {
+    btn.onclick = (e) => { e.stopPropagation(); setEventReview(btn.dataset.id, { state: "confirmed" }); };
+  });
+  ul.querySelectorAll(".btn-reject").forEach((btn) => {
+    btn.onclick = (e) => { e.stopPropagation(); setEventReview(btn.dataset.id, { state: "rejected" }); };
+  });
+  ul.querySelectorAll(".btn-note").forEach((btn) => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      btn.closest("li").querySelector(".note-form").classList.toggle("hidden");
+    };
+  });
+  ul.querySelectorAll(".note-form").forEach((form) => {
+    form.onclick = (e) => e.stopPropagation();
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      const note = form.querySelector(".note-input").value.trim();
+      await setEventReview(form.dataset.id, { note });
+      form.classList.add("hidden");
+    };
   });
 }
+
+async function setEventReview(eventId, fields) {
+  // `fields` may include state and/or note — omitted fields carry forward
+  // their previous value server-side (see review/annotations.py's
+  // set_verdict). Re-fetches the event list afterward so the merged verdict
+  // (annotations layer overlaid on the frozen engine table) is authoritative
+  // rather than guessed at client-side.
+  const body = new URLSearchParams();
+  if (fields.state !== undefined) body.set("state", fields.state);
+  if (fields.note !== undefined) body.set("note", fields.note);
+  const r = await fetch(`/api/runs/${state.runId}/events/${eventId}/review`, { method: "POST", body });
+  if (r.ok) {
+    const evRes = await fetch(`/api/runs/${state.runId}/events`).then((res) => res.json());
+    state.events = evRes.events || [];
+    renderEvents();
+    toast("Granskning sparad", "success");
+  } else {
+    toast("Kunde inte spara granskning", "error");
+  }
+}
+
+$("#event-sort").onchange = renderEvents;
+
+$("#btn-next-unreviewed").onclick = () => {
+  const list = sortedEvents();
+  if (!list.length) { toast("Inga händelser att granska", "info"); return; }
+  const currentIdx = list.findIndex((e) => e.event_id === state.activeEventId);
+  const isUnreviewed = (e) => (e.review ? e.review.state : "unreviewed") === "unreviewed";
+  const next = list.slice(currentIdx + 1).find(isUnreviewed) || list.find(isUnreviewed);
+  if (!next) { toast("Inga fler ogranskade händelser", "success"); return; }
+  jumpToEvent(next.event_id);
+};
+
+// ~5s lead-in/lead-out context window around an event, per the review-queue
+// spec (report §5.2: "auto-seek ... with a small (~5s) context window").
+const REVIEW_CONTEXT_S = 5.0;
 
 function jumpToEvent(eid) {
   const ev = state.events.find((e) => e.event_id === eid);
   if (!ev) return;
   state.activeEventId = eid;
-  // Seek slightly before onset so the reviewer sees the lead-up (a STILLA
-  // event at t=10s usually has the person settling in the seconds before).
-  const ctx_s = Math.min(2.0, Math.max(0, ev.t_end - ev.t_start) / 2);
-  try { video.currentTime = Math.max(0, ev.t_start - ctx_s); } catch (_) {}
+  try { video.currentTime = Math.max(0, ev.t_start - REVIEW_CONTEXT_S); } catch (_) {}
   video.play().catch(() => {}); // ignore autoplay rejection — user gesture already happened
+
+  // Auto-pause once playback runs REVIEW_CONTEXT_S past the event's offset,
+  // bounding the context clip instead of letting playback continue
+  // indefinitely (the reviewer can always resume manually).
+  if (state._reviewPauseHandler) {
+    video.removeEventListener("timeupdate", state._reviewPauseHandler);
+  }
+  const pauseAt = ev.t_end + REVIEW_CONTEXT_S;
+  const onTime = () => {
+    if (video.currentTime >= pauseAt) {
+      video.pause();
+      video.removeEventListener("timeupdate", onTime);
+      state._reviewPauseHandler = null;
+    }
+  };
+  state._reviewPauseHandler = onTime;
+  video.addEventListener("timeupdate", onTime);
+
   renderEvents();
 }
 
@@ -673,6 +792,149 @@ async function downloadExport(fmt) {
   URL.revokeObjectURL(url);
   toast(`Exporterade ${state.events.length} händelser (${fmt.toUpperCase()})`, "success");
 }
+
+// =====================================================================
+// Phase 3: operator field-notes import
+// =====================================================================
+
+function renderOperatorWarnings(warnings) {
+  const ul = $("#operator-warnings");
+  if (!warnings || !warnings.length) {
+    ul.classList.add("hidden");
+    ul.innerHTML = "";
+    return;
+  }
+  ul.classList.remove("hidden");
+  ul.innerHTML = warnings
+    .map((w) => `<li>Rad ${w.line}: ${esc(w.reason)} — "${esc(w.raw_line)}"</li>`)
+    .join("");
+}
+
+function renderOperatorNotes() {
+  const ul = $("#operator-note-list");
+  if (!state.operatorNotes.length) {
+    ul.innerHTML = '<li class="dim">Inga anteckningar importerade.</li>';
+    return;
+  }
+  const sorted = [...state.operatorNotes].sort((a, b) => a.t - b.t);
+  ul.innerHTML = sorted.map((n) => `
+    <li data-id="${esc(n.annotation_id)}">
+      <span class="label">${esc(n.text)}</span>
+      <span class="meta">${fmtT(n.t)}</span>
+      <button class="del" data-id="${esc(n.annotation_id)}" title="Ta bort">Ta bort</button>
+    </li>
+  `).join("");
+  ul.querySelectorAll("li[data-id]").forEach((li) => {
+    li.onclick = (e) => {
+      if (e.target.classList.contains("del")) return;
+      const n = state.operatorNotes.find((x) => x.annotation_id === li.dataset.id);
+      if (n) video.currentTime = n.t;
+    };
+  });
+  ul.querySelectorAll("button.del").forEach((btn) => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const id = btn.dataset.id;
+      const r = await fetch(`/api/runs/${state.runId}/operator-notes/${id}`, { method: "DELETE" });
+      if (r.ok) {
+        state.operatorNotes = state.operatorNotes.filter((n) => n.annotation_id !== id);
+        renderOperatorNotes();
+        toast("Anteckning borttagen", "success");
+        refreshComparison();
+      } else {
+        toast("Kunde inte ta bort anteckning", "error");
+      }
+    };
+  });
+}
+
+$("#operator-import-form").onsubmit = async (e) => {
+  e.preventDefault();
+  if (!state.runId) return;
+  const textarea = $("#operator-import-text");
+  const text = textarea.value;
+  if (!text.trim()) return;
+  const r = await fetch(`/api/runs/${state.runId}/operator-notes/import`, {
+    method: "POST",
+    body: new URLSearchParams({ text }),
+  });
+  if (r.ok) {
+    const body = await r.json();
+    state.operatorNotes.push(...body.imported);
+    renderOperatorNotes();
+    renderOperatorWarnings(body.warnings);
+    textarea.value = "";
+    toast(`${body.imported.length} anteckningar importerade`, "success");
+    refreshComparison();
+  } else {
+    toast("Kunde inte importera anteckningar", "error");
+  }
+};
+
+// =====================================================================
+// Phase 3: AI-vs-operator comparison + HTML debrief export
+// =====================================================================
+
+async function refreshComparison() {
+  if (!state.runId) return;
+  const tol = parseFloat($("#tolerance-input").value) || 60;
+  try {
+    const r = await fetch(`/api/runs/${state.runId}/comparison?tolerance_s=${tol}`);
+    if (!r.ok) { renderComparison(null); return; }
+    renderComparison(await r.json());
+  } catch (_) {
+    renderComparison(null);
+  }
+}
+
+function renderComparison(cmp) {
+  const ul = $("#compare-list");
+  if (!cmp) {
+    $("#cmp-both").textContent = "–";
+    $("#cmp-ai-only").textContent = "–";
+    $("#cmp-op-only").textContent = "–";
+    ul.innerHTML = '<li class="dim">Ingen jämförelse ännu.</li>';
+    return;
+  }
+  $("#cmp-both").textContent = cmp.counts.both;
+  $("#cmp-ai-only").textContent = cmp.counts.ai_only;
+  $("#cmp-op-only").textContent = cmp.counts.operator_only;
+
+  const rows = [];
+  cmp.both.forEach((m) => rows.push({
+    t: m.event.t_start,
+    html: `<li>
+      <span class="label">hittad av båda · ${esc(CATEGORY_LABEL[m.event.category] || m.event.category)}</span>
+      <span class="meta">AI ${fmtT(m.event.t_start)} · operatör ${fmtT(m.note.t)} · Δ ${m.delta_s.toFixed(1)}s</span>
+      <span class="note">${esc(m.note.text)}</span>
+    </li>`,
+  }));
+  cmp.ai_only.forEach((ev) => rows.push({
+    t: ev.t_start,
+    html: `<li>
+      <span class="label">endast AI · ${esc(CATEGORY_LABEL[ev.category] || ev.category)}</span>
+      <span class="meta">${fmtT(ev.t_start)} · v ${ev.confidence.toFixed(2)}</span>
+    </li>`,
+  }));
+  cmp.operator_only.forEach((n) => rows.push({
+    t: n.t,
+    html: `<li>
+      <span class="label">endast operatör</span>
+      <span class="meta">${fmtT(n.t)}</span>
+      <span class="note">${esc(n.text)}</span>
+    </li>`,
+  }));
+  rows.sort((a, b) => a.t - b.t);
+  ul.innerHTML = rows.length ? rows.map((r) => r.html).join("") : '<li class="dim">Ingen jämförelse ännu.</li>';
+}
+
+$("#btn-refresh-comparison").onclick = refreshComparison;
+
+$("#btn-export-debrief").onclick = () => {
+  if (!state.runId) return;
+  const tol = parseFloat($("#tolerance-input").value) || 60;
+  window.location.href = `/api/runs/${state.runId}/debrief?tolerance_s=${tol}`;
+};
 
 // =====================================================================
 // Header stats

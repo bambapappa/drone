@@ -33,8 +33,11 @@ for the offline tool). Code-level citations are in the companion scout report.
 | `analysis/events.py` | P5: behavior/situation status diffed into discrete events (STILLA/MOT_FARA/HAZARD) |
 | `review/` | Thin review UI + REST API over the artifact. **Never imports the engine** (interface rule 2: UI touches only the artifact + annotations). |
 | `review/main.py` | FastAPI app, mounts static + routes |
-| `review/routes.py` | REST endpoints (runs, events, tracklets, persons, video, export, bookmarks, screenshots) |
-| `review/annotations.py` | Append-only annotation log — separate from AI tables (survives re-analysis) |
+| `review/routes.py` | REST endpoints (runs, events, tracklets, persons, video, export, bookmarks, screenshots, event review, operator-notes import, comparison, debrief) |
+| `review/annotations.py` | Append-only annotation log — separate from AI tables (survives re-analysis). Kinds: bookmarks, screenshots (Phase 2), verdicts, operator_notes (Phase 3) |
+| `review/operator_notes.py` | Phase 3: forgiving parser for imported operator field notes → `(t, text)` rows |
+| `review/comparison.py` | Phase 3: time-proximity matching of AI events vs. operator notes → 3-bucket comparison |
+| `review/debrief.py` | Phase 3: renders the standalone HTML training-debrief report |
 | `review/static/` | HTML5 `<video>` + overlay canvas (single-page, no build step) |
 
 The carved-out analyzer modules in `analysis/` are independent copies of their
@@ -57,7 +60,7 @@ Sidecar store at `<output>/<run_id>/`:
 - `tracklets/<pass>.jsonl` — P2's per-(track_id, frame) tracker/Kalman-adjusted boxes, referencing back to `det_id`
 - `persons/<pass>.jsonl` — P3's per-identity records: `person_id, tracklet_ids, embedding_centroids, first/last_seen, confirmation_state, assoc_audit`
 - `events/<pass>.jsonl` — P5's per-event records: `event_id, category, person_id|null, t_start, t_end, confidence, evidence, review` (default unreviewed)
-- `annotations/{bookmarks,screenshots}.jsonl` — human review layer (Phase 2+: bookmarks + screenshots). **Append-only log, separate from AI tables** — never mixed into events/, never overwritten by re-analysis. Tombstones soft-delete; the read path filters them out.
+- `annotations/{bookmarks,screenshots,verdicts,operator_notes}.jsonl` — human review layer. **Append-only log, separate from AI tables** — never mixed into events/, never overwritten by re-analysis. bookmarks/screenshots/operator_notes are entity-per-row with tombstone soft-delete; `verdicts` is keyed by `event_id` with latest-row-wins semantics instead (a verdict is a state-transition history, not a deletable entity) — see `review/annotations.py`'s module docstring and `AnnotationStore.all_verdicts`.
 - `annotations/screenshots/<id>.png` — client-composited PNGs (browser does the compositing; the server never renders a frame — report §2.5 dual-renderer fix)
 - `checkpoints/<pass>/` — P1 resumable state only; P2/P3/P5 always re-run in full (cheap, deterministic given P1's output)
 
@@ -88,6 +91,52 @@ natively or via `docker compose up review` (port 8001 on the host).
 - **Swedish-only GUI** (every user-facing string); internal category enum
   values stay English (`STILLA`/`MOT_FARA`/`HAZARD`) and the JS layer
   maps them to Swedish display labels.
+
+### Evaluation layer (Phase 3)
+
+The requirement-7 workflow (report §5.2-3): a reviewer walks the AI event
+log confirming/rejecting each one, imports the operator's field notes for
+the same exercise, sees a 3-way comparison with timing deltas, and exports
+a standalone HTML debrief. Rationale for the calls below is in DECISIONS
+B25 — this section is the pointer summary for future sessions.
+
+- **Review-queue writes never touch `events/<pass>.jsonl`.** The engine's
+  `review` field there is a frozen default forever (see the P5 section
+  below). Confirm/reject/note calls `AnnotationStore.set_verdict`, which
+  appends to `annotations/verdicts.jsonl`; `routes.py:_merge_verdict`
+  overlays the latest verdict onto an event only when serving it to a
+  reader (`GET .../events`, `.../events/{id}`, `.../comparison`,
+  `.../debrief`). A partial `set_verdict` call (state only, or note only)
+  carries the omitted fields forward from the previous verdict row.
+- **Operator-notes timestamps are video-relative elapsed time, not
+  wall-clock**, matching the tool's timebase everywhere else — there is no
+  wall-clock-anchor concept in this schema, and inventing one solely for
+  this feature would be a new, unproven model (DECISIONS B25). Accepted
+  formats: `[H:]MM:SS[.f]` or plain seconds (`.` or `,` decimal). Import
+  parsing lives in `review/operator_notes.py` and is deliberately forgiving
+  (comma/semicolon delimiter, time-then-text or text-then-time order,
+  optional CSV header, `#` comments) — a line it can't parse becomes a
+  warning in the import response, never a failed import.
+- **Comparison matches by time proximity only** (`review/comparison.py`),
+  never by note text content — deterministic greedy nearest-|Δt| one-to-one
+  assignment, default tolerance 60s (overridable via the `tolerance_s` query
+  param). Three buckets: `both` (matched pairs, `delta_s = note.t -
+  event.t_start`, positive = AI detected first), `ai_only`, `operator_only`.
+  Nothing here is persisted — it's recomputed from live events + live
+  operator_notes on every call, so it's reproducible by construction.
+- **The debrief (`review/debrief.py`) uses frame refs, not embedded
+  thumbnails** — decoding video at export time would make the report
+  dependent on VIDEO_DIR being mounted wherever it's later opened; a frame
+  reference (`frame_start`/`frame_end`, already in every event's evidence)
+  is exact and free. Output is one self-contained HTML string (inline CSS,
+  no external requests) served as a download, same pattern as the CSV/JSON
+  export.
+- **Review-queue UI** (`review/static/app.js`): sort the event list by time
+  or confidence, `jumpToEvent` seeks to `t_start - 5s` and auto-pauses at
+  `t_end + 5s` (the ~5s context window), confirm/reject/note controls per
+  row, a sidebar tab bar (`events`/`bookmarks`/`screenshots`/`operator`)
+  keeps the growing set of Phase 2+3 cards from overflowing the fixed
+  sidebar height.
 
 ### Event derivation (Phase 2, P5)
 

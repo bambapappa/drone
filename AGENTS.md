@@ -26,7 +26,8 @@ for the offline tool). Code-level citations are in the companion scout report.
 | `analysis/situation.py` | `SituationAnalyzer` (carried forward, unchanged) |
 | `analysis/flow.py` | `GlobalMotion`, `BoxFilter`, `local_box_flow` |
 | `analysis/pip.py` | `PipAutoDetector` (carried forward) |
-| `analysis/detector.py` | YOLO + BoT-SORT wrapper (carried forward) |
+| `analysis/detector.py` | P1: stateless YOLO detection only, no tracker |
+| `analysis/tracker.py` | P2: BoT-SORT + GMC, driven from P1's persisted detections |
 
 The carved-out analyzer modules in `analysis/` are independent copies of their
 `app/vision/` originals. The realtime `app/vision/` modules are left untouched.
@@ -43,9 +44,10 @@ BoT-SORT's `track_buffer` is re-expressed as `fps × seconds` (not a fixed 120).
 
 Sidecar store at `<output>/<run_id>/`:
 - `manifest.json` — video hash, config hash, model, seed, pass log
-- `frames/<pass>.jsonl` — per-frame metadata
-- `detections/<pass>.jsonl` — per-detection with raw appearance embedding
-- `checkpoints/<pass>/` — resumable state
+- `frames/<pass>.jsonl` — per-frame metadata (P1)
+- `detections/<pass>.jsonl` — P1's raw per-detection output (never tracker-adjusted), with raw appearance embedding
+- `tracklets/<pass>.jsonl` — P2's per-(track_id, frame) tracker/Kalman-adjusted boxes, referencing back to `det_id`
+- `checkpoints/<pass>/` — P1 resumable state only; P2 always re-runs in full (cheap, deterministic given P1's output)
 
 ## Captain's product decisions (durable)
 

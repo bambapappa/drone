@@ -5,10 +5,16 @@ Passes are sequential and each pass declares what it reads and writes against
 the artifact schema. Adding a new detection capability = adding a pass, not
 touching existing ones.
 
-Phase 0 wires only the P1 detection pass end to end, with checkpointing.
-Later phases add P2 (tracking/stabilization), P3 (identity), P4 (behavior),
-and P5 (event derivation) — each as a separate pass that reads from the
-artifact store.
+Phase 0 wires P1 (stateless detection) and P2 (tracking) end to end.
+Later phases add P3 (identity), P4 (behavior), and P5 (event derivation) —
+each as a separate pass that reads from the artifact store.
+
+P1/P2 split: P1 runs tiled inference and persists raw detections only —
+no tracker involved, so nothing stateful crosses its checkpoint boundary and
+it is trivially, bit-identically resumable. P2 re-derives track continuity
+purely from P1's persisted detections plus a fresh decode (GMC needs
+pixels, not re-inference); it is never checkpointed and always re-runs in
+full, which is cheap and deterministic given the same P1 output.
 """
 
 from __future__ import annotations
@@ -127,13 +133,16 @@ class OfflineOrchestrator:
 
     Usage:
         orchestrator = OfflineOrchestrator(meta, store, config)
-        orchestrator.run_pass_p1()  # detection pass
+        orchestrator.run_pass_p1()  # detection pass (checkpointed/resumable)
+        orchestrator.run_pass_p2()  # tracking pass (always a full re-run)
         # Later phases:
-        # orchestrator.run_pass_p2()  # tracking/stabilization
         # orchestrator.run_pass_p3()  # identity
         # orchestrator.run_pass_p4()  # behavior
         # orchestrator.run_pass_p5()  # event derivation
     """
+
+    P1_PASS_NAME = "p1_detect"
+    P2_PASS_NAME = "p2_track"
 
     def __init__(self, meta: VideoMeta, store: ArtifactStore, config: OfflineConfig):
         self.meta = meta
@@ -215,20 +224,23 @@ class OfflineOrchestrator:
             yaml.dump(cfg, f)
         return path
 
-    # ---- P1: Detection pass ----
+    # ---- P1: Detection pass (stateless, checkpointed/resumable) ----
 
     def run_pass_p1(self) -> None:
         """P1 detection pass: tiled inference over every frame.
 
-        Persists raw detections + a raw per-detection appearance embedding
-        (HSV histogram) to the sidecar store. The embedding cache is new:
-        the old registry.py only kept an EMA-blended gallery, which is
-        insufficient for the global re-ID in Phase 3.
+        Persists raw detections (never tracker-adjusted — P1 has no tracker
+        at all) plus a raw per-detection appearance embedding (HSV
+        histogram) to the sidecar store. The embedding cache is new: the old
+        registry.py only kept an EMA-blended gallery, which is insufficient
+        for the global re-ID in Phase 3.
 
-        Checkpointed/resumable: if interrupted, re-running resumes from the
-        last persisted frame.
+        Stateless and checkpointed/resumable: the only thing that crosses
+        the checkpoint boundary is the frame/det_id watermark, so a resumed
+        run reprocesses from the last persisted frame and reproduces an
+        uninterrupted run frame-for-frame, bit-identically.
         """
-        pass_name = "p1_detect"
+        pass_name = self.P1_PASS_NAME
         pass_meta = {
             "description": "P1 detection pass — tiled inference over every frame",
             "config": self.config.to_dict(),
@@ -266,59 +278,32 @@ class OfflineOrchestrator:
             start_frame = last_frame + 1
             det_id = self.store.get_max_det_id(pass_name) + 1
 
-        # Open the frame store for sequential reading. A fresh FrameStore
-        # starts at frame 0, so the replay warm-up below (which reads
-        # sequentially through [0, start_frame)) leaves it correctly
-        # positioned at start_frame for the main loop — no seek needed.
         frame_store = FrameStore(self.meta.path, self.meta)
+        if start_frame > 0 and not frame_store.seek_to(start_frame):
+            msg = f"Could not seek to resume frame {start_frame}"
+            self.store.record_pass_error(pass_name, msg)
+            frame_store.close()
+            return
 
         # Lazy-load the detector (heavy import)
         from analysis.detector import Detector
 
-        # Re-express BoT-SORT track_buffer for video fps, via a per-run temp
-        # tracker YAML (not the git-tracked file).
-        tracker_yaml_path = self._configure_track_buffer()
+        detector = Detector(
+            model_path=self.config.model,
+            device=self.config.device,
+            imgsz=self.config.imgsz,
+            conf=self.config.conf,
+            iou=self.config.iou,
+            human_classes=self.config.human_classes,
+            threat_classes=self.config.threat_classes,
+            tiles=self.config.tiles,
+        )
+
+        total_frames = self.meta.total_frames
+        processed = 0
+        t_start = _time.monotonic()
 
         try:
-            detector = Detector(
-                model_path=self.config.model,
-                device=self.config.device,
-                imgsz=self.config.imgsz,
-                conf=self.config.conf,
-                iou=self.config.iou,
-                human_classes=self.config.human_classes,
-                threat_classes=self.config.threat_classes,
-                tiles=self.config.tiles,
-                tracker_yaml=tracker_yaml_path,
-            )
-
-            if start_frame > 0:
-                # Deterministic replay warm-up: the tracker/GMC history is
-                # sequential state that crosses the checkpoint boundary same
-                # as frame/det_id do. Rebuild it by replaying already-
-                # persisted detections through the tracker (no re-inference)
-                # over [0, start_frame) — this reproduces the exact
-                # tracker.update() sequence an uninterrupted run performed,
-                # so state at start_frame matches by construction.
-                replay_dets: dict[int, list[dict[str, Any]]] = defaultdict(list)
-                for rec in self.store.iter_detections(pass_name, max_frame_no=start_frame - 1):
-                    replay_dets[rec["frame_no"]].append(rec)
-                for warm_frame_no in range(start_frame):
-                    warm_frame = frame_store.read()
-                    if warm_frame is None:
-                        msg = f"Could not replay frame {warm_frame_no} of {start_frame} for resume warm-up"
-                        self.store.record_pass_error(pass_name, msg)
-                        frame_store.close()
-                        return
-                    warm_frame = self._apply_roi(warm_frame)
-                    h, w = warm_frame.shape[:2]
-                    det = detector.build_replay_boxes(replay_dets.get(warm_frame_no, []), (h, w))
-                    detector.step_tracker(det, warm_frame)
-
-            total_frames = self.meta.total_frames
-            processed = 0
-            t_start = _time.monotonic()
-
             for frame_no in range(start_frame, total_frames):
                 frame = frame_store.read()
                 if frame is None:
@@ -335,8 +320,8 @@ class OfflineOrchestrator:
                 # identically to an uninterrupted one at this exact frame.
                 _seed_rng(_frame_seed(self.config.seed, pass_name, frame_no))
 
-                # Run detection
-                detections = detector.track(frame)
+                # Stateless per-frame detection — no tracker involved.
+                detections = detector.detect(frame)
 
                 for d in detections:
                     x0, y0, x1, y1 = d.xyxy
@@ -359,7 +344,7 @@ class OfflineOrchestrator:
                         "xyxy_raw": list(d.xyxy),
                         "conf": round(d.conf, 4),
                         "cls": d.cls_name,
-                        "track_id": d.track_id,
+                        "cls_id": d.cls_id,
                         "is_human": d.is_human,
                         "embedding": embedding,
                     }
@@ -388,13 +373,93 @@ class OfflineOrchestrator:
                     self.store.record_pass_progress(pass_name, frame_no)
         finally:
             frame_store.close()
-            os.unlink(tracker_yaml_path)
 
         elapsed = _time.monotonic() - t_start
         stats = {
             "frames_processed": processed,
             "total_frames": total_frames,
             "total_detections": det_id,
+            "elapsed_s": round(elapsed, 1),
+            "fps_effective": round(processed / max(elapsed, 0.001), 1),
+        }
+        self.store.record_pass_complete(pass_name, stats)
+
+    # ---- P2: Tracking pass (always a full re-run, never checkpointed) ----
+
+    def run_pass_p2(self) -> None:
+        """P2 tracking pass: BoT-SORT + GMC driven purely from P1's already-
+        persisted detections, plus a fresh decode (GMC needs pixels, not
+        re-inference).
+
+        Always re-runs in full — never checkpointed or resumed. It is
+        deterministic given the same P1 output, so re-running it twice
+        produces byte-identical tracklets, and GMC/track state always
+        starts fresh (never carries a stale offset across invocations, the
+        way a live scene-cut reset would).
+
+        Persists one row per (track_id, frame) to tracklets/<pass>.jsonl:
+        tracklet_id, frame_no, det_id (back-reference to detections/), cls,
+        conf, and the tracker/Kalman-adjusted xyxy. detections/xyxy_raw is
+        never overwritten — that stays P1's pure predict output.
+        """
+        pass_name = self.P2_PASS_NAME
+        pass_meta = {
+            "description": "P2 tracking pass — BoT-SORT + GMC over P1 detections",
+            "config": self.config.to_dict(),
+            "fps": self.meta.fps,
+            "total_frames": self.meta.total_frames,
+        }
+        self.store.record_pass_start(pass_name, pass_meta)
+        self.store.start_fresh_pass_output("tracklets", pass_name)
+
+        dets_by_frame: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        for rec in self.store.iter_detections(self.P1_PASS_NAME):
+            dets_by_frame[rec["frame_no"]].append(rec)
+
+        from analysis.tracker import Tracker
+
+        tracker_yaml_path = self._configure_track_buffer()
+        total_frames = self.meta.total_frames
+        processed = 0
+        total_tracklet_rows = 0
+        t_start = _time.monotonic()
+
+        frame_store = FrameStore(self.meta.path, self.meta)
+        try:
+            tracker = Tracker(tracker_yaml_path)
+            for frame_no in range(total_frames):
+                frame = frame_store.read()
+                if frame is None:
+                    break
+                frame = self._apply_roi(frame)
+
+                # Deterministic order (by det_id, same order P1 persisted
+                # them in) — required so BoT-SORT's per-frame output index
+                # maps back to the correct det_id.
+                records = dets_by_frame.get(frame_no, [])
+                for tb in tracker.update(records, frame):
+                    self.store.add_tracklet_frame(
+                        pass_name,
+                        tb.track_id,
+                        frame_no,
+                        tb.det_id,
+                        {
+                            "cls": tb.cls_name,
+                            "conf": round(tb.conf, 4),
+                            "xyxy": list(tb.xyxy),
+                        },
+                    )
+                    total_tracklet_rows += 1
+                processed += 1
+        finally:
+            frame_store.close()
+            os.unlink(tracker_yaml_path)
+
+        elapsed = _time.monotonic() - t_start
+        stats = {
+            "frames_processed": processed,
+            "total_frames": total_frames,
+            "total_tracklet_rows": total_tracklet_rows,
             "elapsed_s": round(elapsed, 1),
             "fps_effective": round(processed / max(elapsed, 0.001), 1),
         }

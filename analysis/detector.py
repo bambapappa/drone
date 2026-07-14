@@ -1,9 +1,16 @@
-"""YOLO detection + BoT-SORT tracking wrapper.
+"""YOLO detection wrapper — P1's stateless detection pass.
 
 Model-agnostic: class names are introspected so COCO models (person) and
 VisDrone-style models (pedestrian/people) both work, as does any custom
 threat model — configure names via HUMAN_CLASSES / THREAT_CLASSES.
 Imports torch lazily so unit tests and the web app don't require it.
+
+Detection (this module) and tracking (analysis.tracker) are separate passes:
+P1 runs tiled inference and persists raw detections only, with no tracker
+involved; P2 (analysis.tracker.Tracker) re-derives track continuity purely
+from those persisted detections. This is what makes P1 trivially resumable
+(nothing stateful crosses its checkpoint boundary) and P2 a cheap, always-
+full re-run (deterministic given the same persisted detections).
 """
 
 from __future__ import annotations
@@ -21,8 +28,10 @@ TRACKER_YAML = str(Path(__file__).parent / "trackers" / "botsort_drone.yaml")
 class Detection:
     # P1/P2-internal tracking lineage, not a stable public identity — that is
     # person_id, assigned by the Phase 3 registry across occlusions/re-entries.
+    # None for every P1 detection; P2 (analysis.tracker.Tracker) assigns it.
     track_id: int | None
     cls_name: str
+    cls_id: int
     conf: float
     xyxy: tuple[float, float, float, float]
     is_human: bool
@@ -40,7 +49,6 @@ class Detector:
         human_classes: set[str],
         threat_classes: set[str],
         tiles: int = 1,
-        tracker_yaml: str | None = None,
     ):
         from ultralytics import YOLO
 
@@ -50,19 +58,6 @@ class Detector:
         self.conf = conf
         self.iou = iou
         self.tiles = max(1, tiles)
-        self.tracker_yaml = tracker_yaml or TRACKER_YAML
-        # Detection (model.predict) and tracking (manual BOTSORT.update) are
-        # always split, for tiles==1 as much as tiles>1: this is what makes
-        # tracker/GMC state replay-able on resume without re-running
-        # inference (step_tracker below). Native (feature-based) ReID is
-        # unavailable on this manually-driven path — the person registry's
-        # appearance re-ID handles it instead.
-        from ultralytics.trackers.bot_sort import BOTSORT
-        from ultralytics.utils import YAML, IterableSimpleNamespace
-
-        tcfg = YAML.load(self.tracker_yaml)
-        tcfg["with_reid"] = False
-        self._manual_tracker = BOTSORT(IterableSimpleNamespace(**tcfg))
         self.names: dict[int, str] = dict(self.model.names)
         lower = {i: n.lower() for i, n in self.names.items()}
         self.human_ids = {i for i, n in lower.items() if n in human_classes}
@@ -74,67 +69,31 @@ class Detector:
                 f"available: {sorted(lower.values())}"
             )
 
-    def reset_tracker(self) -> None:
-        """Reset BoT-SORT state after a scene cut (file loop, source glitch)."""
-        try:
-            self._manual_tracker.reset()
-        except Exception:
-            pass  # best effort; tracker re-syncs within a few frames anyway
+    def detect(self, frame_bgr: np.ndarray) -> list[Detection]:
+        """Stateless per-frame detection: tiled inference + NMS merge.
 
-    def track(self, frame_bgr: np.ndarray) -> list[Detection]:
-        """Run inference then advance the tracker — the normal per-frame path."""
-        h, w = frame_bgr.shape[:2]
-        det = self._predict_boxes(frame_bgr, h, w)
-        return self.step_tracker(det, frame_bgr)
-
-    def step_tracker(self, det: Any, frame_bgr: np.ndarray) -> list[Detection]:
-        """Advance ONLY the tracker on a prebuilt detections array (no inference).
-
-        The replay primitive: on resume, feeding already-persisted detections
-        through this call (for frames [0, resume_point)) reproduces the same
-        tracker.update() sequence an uninterrupted run performed, so
-        tracker/GMC state at the resume point matches by construction —
-        without re-running the expensive inference step.
+        Returns raw predict boxes only — never tracker-adjusted, since P1
+        never touches a tracker. track_id is always None here.
         """
-        tracks = self._manual_tracker.update(det, frame_bgr)
+        h, w = frame_bgr.shape[:2]
+        boxes = self._predict_boxes(frame_bgr, h, w)
         out: list[Detection] = []
-        for row in tracks:
-            x0, y0, x1, y1, tid, conf, cls = (float(v) for v in row[:7])
+        for x0, y0, x1, y1, conf, cls in zip(
+            boxes.xyxy[:, 0], boxes.xyxy[:, 1], boxes.xyxy[:, 2], boxes.xyxy[:, 3], boxes.conf, boxes.cls
+        ):
             c = int(cls)
             out.append(
                 Detection(
-                    track_id=int(tid),
+                    track_id=None,
                     cls_name=self.names.get(c, str(c)),
-                    conf=conf,
-                    xyxy=(x0, y0, x1, y1),
+                    cls_id=c,
+                    conf=float(conf),
+                    xyxy=(float(x0), float(y0), float(x1), float(y1)),
                     is_human=c in self.human_ids,
                     is_threat=c in self.threat_ids,
                 )
             )
         return out
-
-    def build_replay_boxes(self, records: list[dict[str, Any]], shape: tuple[int, int]) -> Any:
-        """Build a detections array from persisted detection records
-        (xyxy_raw + conf + cls) in the same format `_predict_boxes` produces,
-        for feeding into `step_tracker` during resume replay warm-up."""
-        import torch
-        from ultralytics.engine.results import Boxes
-
-        if not records:
-            data = torch.zeros((0, 6))
-        else:
-            rows = []
-            for r in records:
-                x0, y0, x1, y1 = r["xyxy_raw"]
-                rows.append([x0, y0, x1, y1, float(r["conf"]), float(self._cls_id(r["cls"]))])
-            data = torch.tensor(rows, dtype=torch.float32)
-        return Boxes(data, orig_shape=shape).cpu().numpy()
-
-    def _cls_id(self, cls_name: str) -> int:
-        for i, n in self.names.items():
-            if n == cls_name:
-                return i
-        return -1
 
     def _predict_boxes(self, frame_bgr: np.ndarray, h: int, w: int) -> Any:
         """NxN tiled prediction + global NMS merge (n=1 is a single full-frame tile)."""
@@ -166,7 +125,6 @@ class Detector:
 
         keep = nms_merge(boxes, scores, classes)
         if not keep:
-            # Still step the tracker (ages out lost tracks, advances GMC).
             data = torch.zeros((0, 6))
         else:
             data = torch.tensor(

@@ -16,6 +16,7 @@ class TestArtifactStore:
             assert (run_dir / "manifest.json").exists()
             assert (run_dir / "frames").is_dir()
             assert (run_dir / "detections").is_dir()
+            assert (run_dir / "tracklets").is_dir()
             assert (run_dir / "checkpoints").is_dir()
 
     def test_manifest_content(self):
@@ -153,6 +154,26 @@ class TestArtifactStore:
             entry = store._manifest["passes"]["p1"]
             assert entry["last_frame"] == 42
             assert entry["status"] == "partial"
+
+    def test_add_tracklet_frame_writes_jsonl(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ArtifactStore(tmp, "abc", "cfg")
+            store.create()
+            store.add_tracklet_frame("p2", 7, 0, 3, {"cls": "person", "conf": 0.8, "xyxy": [1, 2, 3, 4]})
+            rows = list(store.iter_tracklets("p2"))
+            assert len(rows) == 1
+            assert rows[0]["tracklet_id"] == 7
+            assert rows[0]["frame_no"] == 0
+            assert rows[0]["det_id"] == 3
+
+    def test_start_fresh_pass_output_truncates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ArtifactStore(tmp, "abc", "cfg")
+            store.create()
+            store.add_tracklet_frame("p2", 1, 0, 0, {"cls": "person", "conf": 0.5, "xyxy": [0, 0, 1, 1]})
+            assert len(list(store.iter_tracklets("p2"))) == 1
+            store.start_fresh_pass_output("tracklets", "p2")
+            assert list(store.iter_tracklets("p2")) == []
 
     def test_config_hash_deterministic(self):
         s1 = {"model": "a.pt", "imgsz": 640, "conf": 0.3}

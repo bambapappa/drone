@@ -6,16 +6,22 @@ Usage:
                     [--imgsz N] [--conf F] [--tiles N] [--seed N]
                     [--resume RUN_ID | --resume latest]
 
-Runs ingest + P1 detection end-to-end. The analysis sidecar is written to
-<output>/<run_id>/ with manifest.json, frames/, detections/, and checkpoints/.
+Runs ingest + P1 (detection) + P2 (tracking) end-to-end. The analysis
+sidecar is written to <output>/<run_id>/ with manifest.json, frames/,
+detections/, tracklets/, and checkpoints/.
 
-By default every invocation mints a fresh run_id and a fresh sidecar —
-re-running the same command does NOT resume automatically. To continue an
-interrupted run, pass --resume <run_id> (or --resume latest to resolve the
-most recent matching run under --output). Resume refuses to continue unless
-the target run's video hash, config hash, code version, and tracker library
-version all match the current invocation, so it can never silently splice
-together a run across a config, code, or tracker-library change.
+P1 is stateless and checkpointed/resumable: by default every invocation
+mints a fresh run_id and a fresh sidecar — re-running the same command does
+NOT resume automatically. To continue an interrupted P1, pass --resume
+<run_id> (or --resume latest to resolve the most recent matching run under
+--output). Resume refuses to continue unless the target run's video hash,
+config hash, code version, and tracker library version all match the
+current invocation, so it can never silently splice together a run across a
+config, code, or tracker-library change.
+
+P2 always re-runs in full (it is cheap and deterministic given P1's
+persisted detections) — it is never checkpointed and --resume does not
+affect it.
 """
 
 from __future__ import annotations
@@ -164,13 +170,25 @@ def main() -> None:
     orchestrator = OfflineOrchestrator(meta, store, config)
     orchestrator.run_pass_p1()
 
-    pass_info = store._manifest.get("passes", {}).get("p1_detect", {})
+    pass_info = store._manifest.get("passes", {}).get(OfflineOrchestrator.P1_PASS_NAME, {})
     stats = pass_info.get("stats", {})
     print(f"  Frames:         {stats.get('frames_processed', '?')}/{meta.total_frames}")
     print(f"  Detections:     {stats.get('total_detections', '?')}")
     print(f"  Time:           {stats.get('elapsed_s', '?')}s")
     eff = stats.get("fps_effective", 0)
     print(f"  Effective fps:  {eff}")
+    print()
+
+    # ---- P2 Tracking Pass (always a full re-run, never checkpointed) ----
+    print("--- P2 Tracking ---")
+    orchestrator.run_pass_p2()
+
+    p2_info = store._manifest.get("passes", {}).get(OfflineOrchestrator.P2_PASS_NAME, {})
+    p2_stats = p2_info.get("stats", {})
+    print(f"  Frames:         {p2_stats.get('frames_processed', '?')}/{meta.total_frames}")
+    print(f"  Tracklet rows:  {p2_stats.get('total_tracklet_rows', '?')}")
+    print(f"  Time:           {p2_stats.get('elapsed_s', '?')}s")
+    print(f"  Effective fps:  {p2_stats.get('fps_effective', 0)}")
 
     store.close()
     total_elapsed = time.monotonic() - t0

@@ -2,17 +2,22 @@
 
 Schema (per architecture report §3):
   frames/            per frame: frame_no (PK), pts_ms, stab_offset [dx,dy]
-  detections/        per detection: frame_no, det_id, xyxy_raw, conf, class,
+  detections/        P1 output only — raw predict boxes, never tracker-
+                     adjusted: frame_no, det_id, xyxy_raw, conf, class,
                      embedding_ref (raw per-detection appearance vector)
+  tracklets/         P2 output — one row per (track_id, frame): tracklet_id,
+                     frame_no, det_id (references back to detections/),
+                     cls, conf, xyxy (tracker/Kalman-adjusted box). Tracker
+                     output lives here; detections/xyxy_raw is never
+                     overwritten by it.
   manifest.json      video hash, config hash, model+weights versions, seed,
                      code version, pass log
 
 Each table is a directory of JSONL files, one per pass. The manifest ties
 everything together and enables bit-identical re-runs.
 
-For Phase 0, we persist frames/ and detections/ at minimum. Other tables
-(frames/, tracklets/, persons/, trajectories/, events/, annotations/) are
-later phases' concern but the schema is designed so they slot in without
+Other tables (persons/, trajectories/, events/, annotations/) are later
+phases' concern but the schema is designed so they slot in without
 restructuring.
 """
 
@@ -30,12 +35,10 @@ SIDECAR_VERSION = 1
 
 
 def tracker_lib_version() -> str:
-    """Version of the tracking library (ultralytics) whose BOTSORT
-    association logic the resume replay warm-up re-derives tracker/GMC
-    state from. Replay determinism only holds if the library that produced
-    the interrupted run's checkpoint is unchanged — a version bump refuses
-    resume rather than silently reconstructing state with different tracker
-    internals."""
+    """Version of the tracking library (ultralytics) that P2's BOTSORT
+    tracking pass runs against. Recorded in the manifest so a P2 re-run's
+    determinism guarantee (byte-identical tracklets given the same P1
+    output) is provenance-checked the same way P1's resume guard is."""
     try:
         import ultralytics
 
@@ -89,8 +92,9 @@ class ArtifactStore:
         <run_id>/           # uuid-based run directory
           manifest.json
           frames/           # frame-level data (JSONL per pass)
-          detections/       # per-detection data (JSONL per pass)
-          checkpoints/      # pass checkpoint state
+          detections/       # P1's raw per-detection data (JSONL per pass)
+          tracklets/        # P2's per-(track_id, frame) tracked boxes (JSONL per pass)
+          checkpoints/      # P1 checkpoint state (P2 is never checkpointed)
     """
 
     def __init__(self, output_dir: str, video_hash: str, config_hash: str, run_id: str | None = None):
@@ -110,7 +114,7 @@ class ArtifactStore:
         open_existing()'s job, and only when explicitly requested via --resume.
         """
         self.run_dir.mkdir(parents=True, exist_ok=True)
-        for sub in ("frames", "detections", "checkpoints"):
+        for sub in ("frames", "detections", "tracklets", "checkpoints"):
             (self.run_dir / sub).mkdir(exist_ok=True)
 
         now = datetime.now(timezone.utc).isoformat()
@@ -136,10 +140,8 @@ class ArtifactStore:
         current invocation — resuming across a video, config (which includes
         model/weights), code, or tracker-library change would build a
         chimera artifact the manifest would then misrepresent as a single
-        consistent run, and would break the replay warm-up's bit-identity
-        guarantee (it re-derives tracker state from persisted detections
-        using the *current* tracker library). Raises ResumeValidationError on
-        any mismatch or if the run directory doesn't exist.
+        consistent run. Raises ResumeValidationError on any mismatch or if
+        the run directory doesn't exist.
         """
         run_dir = Path(output_dir) / run_id
         manifest_path = run_dir / "manifest.json"
@@ -278,6 +280,45 @@ class ArtifactStore:
         with open(fpath, "a") as f:
             f.write(json_line)
 
+    def start_fresh_pass_output(self, table: str, pass_name: str) -> None:
+        """Truncate a per-pass JSONL table before a pass that always fully
+        re-runs (e.g. P2, which is never resumed — it's cheap and
+        deterministic given the same P1 output). Without this, re-running
+        the pass would append to stale output from a prior invocation."""
+        fpath = self.run_dir / table / f"{pass_name}.jsonl"
+        fpath.parent.mkdir(parents=True, exist_ok=True)
+        fpath.write_text("")
+
+    def add_tracklet_frame(
+        self, pass_name: str, tracklet_id: int, frame_no: int, det_id: int, data: dict[str, Any]
+    ) -> None:
+        """Write one (tracklet, frame) row to tracklets/<pass_name>.jsonl.
+
+        `data` must contain at minimum: {'cls': str, 'conf': float,
+        'xyxy': [x0,y0,x1,y1]} — the tracker/Kalman-adjusted box. This is
+        the only place tracker output is persisted; detections/xyxy_raw is
+        P1's pure predict output and is never overwritten by it.
+        """
+        fpath = self.run_dir / "tracklets" / f"{pass_name}.jsonl"
+        data = dict(data)
+        data["tracklet_id"] = tracklet_id
+        data["frame_no"] = frame_no
+        data["det_id"] = det_id
+        json_line = json.dumps(data, separators=(",", ":"), ensure_ascii=False) + "\n"
+        with open(fpath, "a") as f:
+            f.write(json_line)
+
+    def iter_tracklets(self, pass_name: str):
+        """Yield persisted tracklet-frame rows for a pass, in write order."""
+        fpath = self.run_dir / "tracklets" / f"{pass_name}.jsonl"
+        if not fpath.exists():
+            return
+        with open(fpath) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    yield json.loads(line)
+
     def save_checkpoint(self, pass_name: str, state: dict[str, Any]) -> str:
         """Save a checkpoint for the given pass. Returns the checkpoint path."""
         cp_dir = self.run_dir / "checkpoints" / pass_name
@@ -382,10 +423,10 @@ class ArtifactStore:
         return max_det_id
 
     def iter_detections(self, pass_name: str, max_frame_no: int | None = None):
-        """Yield persisted detection records for a pass, optionally bounded
-        to frame_no <= max_frame_no. Used by the resume replay warm-up to
-        reconstruct tracker/GMC state from already-persisted detections
-        without re-running inference.
+        """Yield persisted P1 detection records for a pass, in write order
+        (which is det_id order), optionally bounded to frame_no <=
+        max_frame_no. P2 streams these — grouped by frame_no — to drive the
+        tracking pass without re-running inference.
         """
         fpath = self.run_dir / "detections" / f"{pass_name}.jsonl"
         if not fpath.exists():

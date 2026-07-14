@@ -508,7 +508,7 @@ async def delete_screenshot(
 @router.post("/runs/{run_id}/operator-notes/import", status_code=201)
 async def import_operator_notes(
     run_id: str,
-    text: str = Form(..., min_length=1),
+    text: str = Form(..., min_length=1, max_length=200_000),
     settings: ReviewSettings = Depends(get_settings),
 ) -> dict[str, Any]:
     """Parse and store a blob of operator field notes.

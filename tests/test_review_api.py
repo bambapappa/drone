@@ -571,3 +571,10 @@ async def test_add_bookmark_rejects_empty_label(settings, run_id, client):
         data={"t": "1", "label": ""},
     )
     assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_import_operator_notes_rejects_oversized_text(settings, run_id, client):
+    text = "x" * 200_001
+    r = await client.post(f"/api/runs/{run_id}/operator-notes/import", data={"text": text})
+    assert r.status_code == 422

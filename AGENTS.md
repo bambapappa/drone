@@ -176,7 +176,7 @@ make test                                  # pytest tests/ -v
 make lint                                  # ruff check + format check
 ```
 
-CI runs `ruff check` + `ruff format --check` on `app/`, `tests/`, `scripts/`, `analysis/`,
+CI runs `ruff check` + `ruff format --check` on `app/`, `tests/`, `scripts/`, `analysis/`, `review/`,
 then `pytest tests/ -v`.
 
 ## Docker

@@ -1,9 +1,14 @@
 # Konfiguration
 
-Alla inställningar sätts som miljövariabler (versalt fältnamn) eller i en
-`.env`-fil i repo-roten. Defaultvärden lever i `app/core/config.py` och är
-**identiska för allt material** — samma konfiguration ger förutsägbart utfall
-på osedd film. Inga per-video-trösklar.
+Denna sida gäller **realtidspipelinen** (`app/`). Alla inställningar sätts
+som miljövariabler (versalt fältnamn) eller i en `.env`-fil i repo-roten.
+Defaultvärden lever i `app/core/config.py` och är **identiska för allt
+material** — samma konfiguration ger förutsägbart utfall på osedd film.
+Inga per-video-trösklar.
+
+Det fristående offline-batchverktyget (`analysis/`, se
+[ARCHITECTURE.md](ARCHITECTURE.md)) konfigureras i stället via CLI-flaggor
+(`analyze --help`), inte dessa miljövariabler.
 
 ## Videokälla
 

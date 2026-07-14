@@ -92,3 +92,23 @@ kräver ingen serveromrendering.
 `tests/` kör utan ML-beroende (snabbt, deterministiskt): beteende, register,
 filter/rörelse, lägesbild, tiling, IR-PiP, config-validering, API.
 `integration_check.py` täcker hela den körande pipelinen.
+
+## Offline-analysverktyg (`analysis/`)
+
+Fristående batchverktyg för sekventiell, deterministisk analys av en
+inspelad film i efterhand (träning/utvärdering) — ett tillägg vid sidan av
+ovanstående realtidspipeline, inte en ersättning. Delar inga körande
+komponenter med `app/vision/`; de rena analysmodulerna (detektor/tiling,
+register, beteende, lägesbild, flöde, PiP) är utklippta till egna,
+oförändrade kopior i `analysis/`.
+
+Skillnad mot realtidspipelinen: en process, sekventiella pass i stället för
+render-/detect-trådar, och **videotid** (`t = bildruta/fps`, PTS-korrigerad)
+i stället för `time.monotonic()`. Resultatet skrivs till ett versionerat
+sidecar-arkiv (`manifest.json` + JSONL i `frames/`, `detections/`,
+`tracklets/`) i stället för att strömmas till en webbklient. Körs via
+`analyze <film>` (CLI) eller `docker compose -f docker-compose.yml -f
+docker-compose.offline.yml run --rm analyze <film>`.
+
+Modulkarta, artefaktschema och passordning (P1 detektion → P2 spårning →
+senare pass) finns i [AGENTS.md](../AGENTS.md).

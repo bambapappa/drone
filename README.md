@@ -71,6 +71,24 @@ python scripts/fetch_visdrone.py     # -> models/visdrone-yolov8s.pt
 Vilken Ultralytics-`.pt` som helst fungerar — klassnamnen introspekteras.
 `models/` monteras in i Docker automatiskt. Detaljer: [docs/CONFIG.md](docs/CONFIG.md).
 
+## Offline-analys (batchläge)
+
+Utöver realtids-PoC:n ovan finns ett fristående batchverktyg i `analysis/` för
+att köra sekventiell, deterministisk analys mot en inspelad film i efterhand
+(träning/utvärdering) — samma analysmoduler, men egen kodväg och körtid; ett
+tillägg, inte en ersättning för realtidspipelinen.
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.offline.yml run --rm analyze /videos/film.mp4
+# eller nativt (efter make venv):
+analyze /videos/film.mp4
+```
+
+Resultatet skrivs till ett versionerat sidecar-arkiv (`manifest.json` + JSONL)
+under `analysis-output/`. Nuvarande fas kör ingest (PTS-index, videohash,
+IR-PiP-lås) samt P1 (detektion) och P2 (spårning); modulkarta och detaljer i
+[AGENTS.md](AGENTS.md).
+
 ## Utveckling
 
 ```bash

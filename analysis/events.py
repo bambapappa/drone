@@ -345,6 +345,19 @@ def derive_hazard_events(
         smoke_timeline.append((frame_no, state.smoke is not None, state.smoke.area if state.smoke else 0.0))
         frame_no += 1
 
+    return _diff_and_number_hazard_events(fire_timeline, smoke_timeline, fps)
+
+
+def _diff_and_number_hazard_events(
+    fire_timeline: list[tuple[int, bool, float]],
+    smoke_timeline: list[tuple[int, bool, float]],
+    fps: float,
+) -> list[Event]:
+    """Diff fire/smoke timelines into HAZARD events, ordered and re-numbered.
+
+    Shared by derive_hazard_events and derive_events so the two callers can't
+    drift on the diff/sort/renumber logic.
+    """
     events: list[Event] = []
     seq = 0
     for kind, timeline in (("fire", fire_timeline), ("smoke", smoke_timeline)):
@@ -467,9 +480,9 @@ def derive_events(
     the tracklet boxes.
     """
     # First pass: run the situation analyzer to learn the per-frame danger
-    # point (fire/smoke position). We have to materialize frames anyway
-    # because SituationAnalyzer holds prev_gray internally.
-    frame_list = list(frames)
+    # point (fire/smoke position). SituationAnalyzer only needs frames in
+    # sequential order (it holds prev_gray internally) — the stream is
+    # consumed once, not materialized, so this stays bounded on long films.
     sit = SituationAnalyzer(
         min_area=config.hazard_min_area,
         hold_s=config.hazard_hold_s,
@@ -487,7 +500,7 @@ def derive_events(
     danger_px_by_frame: dict[int, tuple[float, float] | None] = {}
 
     frame_no = 0
-    for frame in frame_list:
+    for frame in frames:
         t = frame_no / fps
         state = sit.update(frame, t, danger_norm=None, ignore=ignore_regions)
         if state.fire is not None:
@@ -532,15 +545,7 @@ def derive_events(
     )
 
     # Hazard events: diff the timelines we already collected.
-    hazard_events: list[Event] = []
-    seq = 0
-    for kind, timeline in (("fire", fire_timeline), ("smoke", smoke_timeline)):
-        for ev in _diff_hazard_timeline(timeline, kind=kind, fps=fps, seq_start=seq):
-            hazard_events.append(ev)
-            seq += 1
-    hazard_events.sort(key=lambda e: (e.t_start, e.evidence["kind"]))
-    for i, ev in enumerate(hazard_events):
-        ev.event_id = _event_id(CATEGORY_HAZARD, i)
+    hazard_events = _diff_and_number_hazard_events(fire_timeline, smoke_timeline, fps)
 
     # Merge into a single time-ordered log. Stable sort preserves the
     # within-category ordering above.

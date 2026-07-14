@@ -162,40 +162,21 @@ class AnnotationStore:
         expected to keep the PNG themselves; the row still anchors the
         timestamp + label + note in the review log.
         """
-        row = self._append(
+        annotation_id = _annotation_id()
+        png_filename = None
+        if png_bytes is not None:
+            png_filename = f"{annotation_id}.png"
+            (self.screenshots_dir / png_filename).write_bytes(png_bytes)
+        return self._append(
             SCREENSHOTS,
             {
+                "annotation_id": annotation_id,
                 "t": round(float(t), 3),
                 "label": label,
                 "note": note,
-                "png_filename": None,
+                "png_filename": png_filename,
             },
         )
-        if png_bytes is not None:
-            png_filename = f"{row['annotation_id']}.png"
-            (self.screenshots_dir / png_filename).write_bytes(png_bytes)
-            # Update the row in place (file rewrite is acceptable here: the
-            # row was just appended in this same call, so no concurrent
-            # reader can have a stale view yet, and the rewrite is within
-            # the same atomic add_screenshot call).
-            row["png_filename"] = png_filename
-            self._rewrite_last_row(SCREENSHOTS, row)
-        return row
-
-    def _rewrite_last_row(self, kind: str, new_row: dict[str, Any]) -> None:
-        """Replace the last row of <kind>.jsonl with new_row. Used by
-        add_screenshot() to fill in png_filename after the PNG is written
-        in the same call — the id was already minted, so we patch the row
-        in place rather than appending a second one."""
-        path = self._log_path(kind)
-        if not path.exists():
-            return
-        lines = path.read_text().splitlines()
-        if not lines:
-            return
-        lines[-1] = json.dumps(new_row, separators=(",", ":"), ensure_ascii=False)
-        with open(path, "w") as f:
-            f.write("\n".join(lines) + "\n")
 
     def list_screenshots(self) -> list[dict[str, Any]]:
         return self._live_rows(SCREENSHOTS)

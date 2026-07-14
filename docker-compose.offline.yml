@@ -1,7 +1,11 @@
-# Offline drone video analysis service.
+# Offline drone video analysis services.
 # Usage:
+#   # CLI batch analysis (writes sidecar under ./analysis-output/):
 #   docker compose -f docker-compose.yml -f docker-compose.offline.yml run --rm analyze /videos/film.mp4
 #   docker compose -f docker-compose.yml -f docker-compose.offline.yml run --rm analyze /videos/brandfilm.mp4 --tiles 2 --imgsz 1280 --device cpu --seed 42
+#
+#   # Review UI on http://localhost:8001 (reads what `analyze` wrote):
+#   docker compose -f docker-compose.yml -f docker-compose.offline.yml up review
 #
 # The analysis sidecar is written to ./analysis-output/ (mounted volume).
 # Every run mints a fresh run_id by default — re-running the same command
@@ -27,3 +31,28 @@ services:
       - ./models:/models:ro
     # No ports, no healthcheck — this is a batch job, not a server.
     # Using `run` instead of `up` means it exits when done.
+
+  review:
+    # Thin review UI + annotation REST API over the artifact that `analyze`
+    # produces. Native HTML5 <video> plays the original file from VIDEO_DIR;
+    # the sidecar store is read from ANALYSIS_OUTPUT_DIR. Annotations
+    # (bookmarks + screenshots) are written to a separate append-only log
+    # inside each run's sidecar directory, so a re-analysis never destroys
+    # human review work (report §2.4).
+    build: .
+    entrypoint: ["uvicorn", "review.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      - ANALYSIS_OUTPUT_DIR=/analysis-output
+      - VIDEO_DIR=/videos
+      - PYTHONPATH=/app
+    ports:
+      - "8001:8000"  # host 8001 → container 8000 (avoids clashing with the realtime api on 8000)
+    volumes:
+      - ./videos:/videos:ro                  # playback source (read-only)
+      - ./analysis-output:/analysis-output   # read AI tables, write annotations/
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

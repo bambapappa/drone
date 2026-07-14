@@ -16,14 +16,25 @@ Schema (per architecture report §3):
                      first_seen/last_seen (video-time), confirmation state,
                      assoc_audit [{tracklet pair, appearance sim,
                      spatio-temporal gate values, rule}]
+  events/            P5 output — one row per derived event: event_id,
+                     category, person_id|null, t_start, t_end, confidence,
+                     evidence, review (default unreviewed; verdicts live in
+                     annotations/, not here)
+  annotations/       Human review layer (Phase 2+: bookmarks, screenshots;
+                     Phase 3: confirm/reject on events, operator-notes
+                     import, identity corrections). APPEND-ONLY and stored
+                     separately from AI-generated tables so a re-analysis
+                     (which rewrites frames/detections/tracklets/persons/
+                     events) never destroys human review work. See
+                     AppendOnlyAnnotationStore.
   manifest.json      video hash, config hash, model+weights versions, seed,
                      code version, pass log
 
 Each table is a directory of JSONL files, one per pass. The manifest ties
 everything together and enables bit-identical re-runs.
 
-Other tables (trajectories/, events/, annotations/) are later phases'
-concern but the schema is designed so they slot in without restructuring.
+Trajectories/ (per-person series) is a later-phase concern but the schema is
+designed so it slots in without restructuring.
 """
 
 from __future__ import annotations
@@ -111,6 +122,23 @@ class ArtifactStore:
         self.run_dir = self.output_dir / self.run_id
         self._manifest: dict[str, Any] = {}
         self._open_writers: dict[str, Any] = {}
+        # Optional video filename for the review UI to resolve the source
+        # video through VIDEO_DIR. Stored as basename only (not full path) so
+        # the sidecar stays portable across machines and mount points.
+        self.video_filename: str | None = None
+
+    def set_video_filename(self, filename: str) -> None:
+        """Record the source video's basename in the manifest.
+
+        The review UI needs to locate the original video file to play it back.
+        Storing the basename (not the absolute path) keeps the sidecar
+        portable: the review API resolves `<VIDEO_DIR>/<filename>` at serve
+        time, so the same sidecar works across machines with different mount
+        points. Set once at ingest; never updated.
+        """
+        self.video_filename = filename
+        self._manifest["video_filename"] = filename
+        self._write_manifest()
 
     def create(self) -> None:
         """Create the sidecar directory structure and initial manifest.
@@ -120,7 +148,7 @@ class ArtifactStore:
         open_existing()'s job, and only when explicitly requested via --resume.
         """
         self.run_dir.mkdir(parents=True, exist_ok=True)
-        for sub in ("frames", "detections", "tracklets", "persons", "checkpoints"):
+        for sub in ("frames", "detections", "tracklets", "persons", "events", "annotations", "checkpoints"):
             (self.run_dir / sub).mkdir(exist_ok=True)
 
         now = datetime.now(timezone.utc).isoformat()
@@ -361,6 +389,43 @@ class ArtifactStore:
                 if line:
                     yield json.loads(line)
 
+    def add_event(self, pass_name: str, event_id: str, data: dict[str, Any]) -> None:
+        """Append one P5 event row to events/<pass_name>.jsonl.
+
+        P5 always re-runs in full like P2/P3, so callers truncate the file
+        via start_fresh_pass_output("events", pass_name) before writing.
+
+        `data` must contain the architecture report §3 events/ schema:
+        {'event_id', 'category', 'person_id': int|None, 't_start', 't_end',
+         'confidence', 'evidence': {...}, 'review': {'state': 'unreviewed', ...}}
+
+        The review field is initialized by the engine to the default
+        unreviewed state and never written by the engine again — review
+        verdicts (confirm/reject/note) arrive through the annotations layer,
+        which is a separate append-only log keyed to artifact version
+        (report §2.4). Mixing verdicts into this AI-generated table would
+        make a re-analysis (which rewrites events/) silently destroy human
+        review work.
+        """
+        fpath = self.run_dir / "events" / f"{pass_name}.jsonl"
+        data = dict(data)
+        data["event_id"] = event_id
+        json_line = json.dumps(data, separators=(",", ":"), ensure_ascii=False) + "\n"
+        with open(fpath, "a") as f:
+            f.write(json_line)
+
+    def iter_events(self, pass_name: str):
+        """Yield persisted P5 event records for a pass, in write order
+        (which is onset order — P5 sorts by t_start before persisting)."""
+        fpath = self.run_dir / "events" / f"{pass_name}.jsonl"
+        if not fpath.exists():
+            return
+        with open(fpath) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    yield json.loads(line)
+
     def save_checkpoint(self, pass_name: str, state: dict[str, Any]) -> str:
         """Save a checkpoint for the given pass. Returns the checkpoint path."""
         cp_dir = self.run_dir / "checkpoints" / pass_name
@@ -485,6 +550,37 @@ class ArtifactStore:
 
     def close(self) -> None:
         self._write_manifest()
+
+    @classmethod
+    def open_readonly(cls, run_dir: str | Path) -> "ArtifactStore":
+        """Open an existing run directory read-only for the review UI.
+
+        Unlike open_existing(), this performs no provenance validation — it
+        is the thin reader path the review API uses to serve artifacts to the
+        browser. Loads the manifest from disk; never writes. Raises
+        FileNotFoundError if no manifest.json is present.
+        """
+        run_dir = Path(run_dir)
+        manifest_path = run_dir / "manifest.json"
+        if not manifest_path.exists():
+            raise FileNotFoundError(f"No manifest.json at {run_dir}")
+        with open(manifest_path) as f:
+            manifest = json.load(f)
+        # Bypass __init__ to avoid minting a fresh run_id; we only need the
+        # read-side helpers (iter_*, run_dir, manifest).
+        store = cls.__new__(cls)
+        store.output_dir = run_dir.parent
+        store.run_id = run_dir.name
+        store.run_dir = run_dir
+        store._manifest = manifest
+        store._open_writers = {}
+        store.video_filename = manifest.get("video_filename")
+        return store
+
+    @property
+    def manifest(self) -> dict[str, Any]:
+        """Read-only view of the persisted manifest."""
+        return dict(self._manifest)
 
     def _write_manifest(self) -> None:
         with open(self.run_dir / "manifest.json", "w") as f:

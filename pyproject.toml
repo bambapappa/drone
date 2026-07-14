@@ -40,8 +40,9 @@ asyncio_mode = "auto"
 analyze = "analysis.cli:main"
 
 [tool.setuptools]
-packages = ["app", "analysis"]
+packages = ["app", "analysis", "review"]
 
 [tool.setuptools.package-data]
 app = ["static/*", "vision/trackers/*.yaml"]
 analysis = ["trackers/*.yaml"]
+review = ["static/*"]

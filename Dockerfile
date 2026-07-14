@@ -27,6 +27,7 @@ ENV MODEL=/models/${MODEL} \
 
 COPY app/ ./app/
 COPY analysis/ ./analysis/
+COPY review/ ./review/
 
 EXPOSE 8000
 

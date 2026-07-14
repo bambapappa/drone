@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="sv">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0c1014">
+  <title>Drönare · Granskning</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header id="topbar">
+    <div id="brand">INSATS<span>DRÖNARE</span> · <em>granskning</em></div>
+    <div id="run-picker">
+      <select id="run-select"></select>
+      <button id="btn-load-run" class="primary">Öppna körning</button>
+    </div>
+    <div id="stats">
+      <div class="stat" id="st-events" title="Händelser totalt"><b>–</b><small>händelser</small></div>
+      <div class="stat" id="st-persons" title="Unika personer"><b>–</b><small>personer</small></div>
+      <div class="stat dim" id="st-bookmarks" title="Bokmärken"><b>0</b><small>bokmärken</small></div>
+    </div>
+  </header>
+
+  <main id="main-empty">
+    <div class="empty-state">
+      <p>Välj en analyskörning i listan högst upp och tryck på <strong>Öppna körning</strong>.</p>
+      <p class="dim">Saknas körningar? Kör först <code>analyze &lt;video&gt;</code> så skapas ett arkiv i <code>analysis-output/</code>.</p>
+    </div>
+  </main>
+
+  <main id="main-review" hidden>
+    <div id="stage">
+      <video id="video" playsinline controls></video>
+      <canvas id="overlay"></canvas>
+      <div id="overlay-msg" class="hidden">Laddar video …</div>
+      <div id="frame-info" class="hidden">–</div>
+    </div>
+
+    <nav id="toggles">
+      <button class="chip on" data-layer="boxes">Boxar</button>
+      <button class="chip on" data-layer="ids">ID</button>
+      <button class="chip on" data-layer="status">Beteende</button>
+      <button class="chip" data-layer="trails">Spår</button>
+      <span class="spacer"></span>
+      <button class="chip" id="btn-bookmark">🔖 Bokmärke</button>
+      <button class="chip" id="btn-screenshot">📸 Skärmdump</button>
+      <span class="spacer"></span>
+      <button class="chip" id="btn-export-csv">Export CSV</button>
+      <button class="chip" id="btn-export-json">Export JSON</button>
+    </nav>
+
+    <aside id="sidebar">
+      <section class="card">
+        <h3>Händelselogg</h3>
+        <ul id="event-list" class="scroll-list"><li class="dim">Inga händelser.</li></ul>
+      </section>
+
+      <section class="card">
+        <h3>Bokmärken</h3>
+        <ul id="bookmark-list" class="scroll-list"><li class="dim">Inga bokmärken.</li></ul>
+        <form id="bookmark-form" class="inline-form hidden">
+          <input type="text" id="bm-label" placeholder="Etikett (krävs)" maxlength="200" required>
+          <input type="text" id="bm-note" placeholder="Anteckning (valfritt)" maxlength="4000">
+          <button type="submit" class="primary small">Spara</button>
+          <button type="button" id="bm-cancel" class="small">Avbryt</button>
+        </form>
+      </section>
+
+      <section class="card">
+        <h3>Skärmdumpar</h3>
+        <ul id="screenshot-list" class="scroll-list"><li class="dim">Inga skärmdumpar.</li></ul>
+      </section>
+    </aside>
+  </main>
+
+  <div id="toast" class="hidden"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

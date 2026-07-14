@@ -263,6 +263,10 @@ async def get_frames_meta(
     then fetches the matching tracklet boxes."""
     store = _open_store(settings, run_id)
     p1 = OfflineOrchestrator.P1_PASS_NAME
+    p1_meta = store.manifest.get("passes", {}).get(p1, {})
+    if p1_meta.get("status") != "complete":
+        raise HTTPException(status_code=409, detail="P1 har inte körts för den här körningen")
+    fps = p1_meta.get("meta", {}).get("fps", 25.0)
     rows: list[dict[str, Any]] = []
     with open(store.run_dir / "frames" / f"{p1}.jsonl") as f:
         for line in f:
@@ -275,7 +279,7 @@ async def get_frames_meta(
                 continue
             if frame_to is not None and fn > frame_to:
                 break
-            rows.append({"frame_no": fn, "pts_ms": rec.get("pts_ms", fn * 1000.0 / 30.0)})
+            rows.append({"frame_no": fn, "pts_ms": rec.get("pts_ms", fn * 1000.0 / fps)})
     return {"frames": rows}
 
 

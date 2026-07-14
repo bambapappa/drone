@@ -47,9 +47,10 @@ const state = {
   events: [],
   bookmarks: [],
   screenshots: [],
-  frames: [],          // [{frame_no, pts_ms}] sorted; the PTS sync index
+  frames: [],          // [{frame_no, pts_ms}] sorted window around the playhead
+  frameStep: null,     // ms/frame, learned from the first loaded window
   boxesByFrame: null,  // lazy: Map<frame_no, box[]>
-  trailCache: new Map(), // frame_no → boxes (small window cache)
+  trailCache: { from: null, to: null, frames: {} }, // sliding tracklet window
   activeEventId: null,
   layers: { boxes: true, ids: true, status: true, trails: false },
 };
@@ -112,7 +113,7 @@ $("#btn-load-run").onclick = async () => {
 async function loadRun(rid) {
   state.runId = rid;
   state.activeEventId = null;
-  state.trailCache.clear();
+  state.trailCache = { from: null, to: null, frames: {} };
 
   // 1. Run summary (drives UI visibility + video URL).
   const [sumRes, annRes] = await Promise.all([
@@ -163,15 +164,41 @@ async function loadRun(rid) {
   // file: long films have tens of thousands of frames and the index is
   // only consulted for sync, not for rendering.
   state.frames = [];
+  state.frameStep = null;
   state.boxesByFrame = null;
-  loadFramesIndex();
+  await ensureFramesWindow(0);
 }
 
-async function loadFramesIndex() {
+// Frames of margin loaded either side of the estimated playhead position —
+// bounds the fetch/scan cost regardless of the film's total frame count.
+const FRAMES_WINDOW_HALF = 500;
+const FRAMES_WINDOW_MARGIN_MS = 1000;
+
+async function ensureFramesWindow(tMs) {
+  const frames = state.frames;
+  const covered =
+    frames.length &&
+    tMs >= frames[0].pts_ms - FRAMES_WINDOW_MARGIN_MS &&
+    tMs <= frames[frames.length - 1].pts_ms + FRAMES_WINDOW_MARGIN_MS;
+  if (covered) return;
+
+  const estimate = state.frameStep ? Math.round(tMs / state.frameStep) : 0;
+  const from = Math.max(0, estimate - FRAMES_WINDOW_HALF);
+  const to = estimate + FRAMES_WINDOW_HALF;
   try {
-    const r = await fetch(`/api/runs/${state.runId}/frames/meta`).then((r) => r.json());
-    state.frames = r.frames || [];
-  } catch (_) { state.frames = []; }
+    const r = await fetch(
+      `/api/runs/${state.runId}/frames/meta?from=${from}&to=${to}`
+    ).then((r) => r.json());
+    const loaded = r.frames || [];
+    if (loaded.length > 1 && !state.frameStep) {
+      const first = loaded[0];
+      const last = loaded[loaded.length - 1];
+      if (last.frame_no > first.frame_no) {
+        state.frameStep = (last.pts_ms - first.pts_ms) / (last.frame_no - first.frame_no);
+      }
+    }
+    state.frames = loaded;
+  } catch (_) { /* keep the stale window rather than clearing it */ }
 }
 
 // =====================================================================
@@ -222,19 +249,25 @@ async function fetchBoxesForFrame(frameNo) {
   } catch (_) { return []; }
 }
 
+// Frames of lookahead buffered past the current playhead per fetch, so as
+// playback advances tick by tick the cached window keeps covering the
+// requested [frameNo-span, frameNo] range instead of refetching every tick.
+const TRAIL_WINDOW_LOOKAHEAD = 150;
+
 async function fetchTrailWindow(frameNo, span = 30) {
-  // Trails need a frame window; pull [frameNo-span, frameNo] and cache.
-  const from = Math.max(0, frameNo - span);
-  const cacheKey = `${from}:${frameNo}`;
-  if (state.trailCache.has(cacheKey)) return state.trailCache.get(cacheKey);
+  const needFrom = Math.max(0, frameNo - span);
+  const cache = state.trailCache;
+  if (cache.to != null && frameNo <= cache.to && needFrom >= cache.from) {
+    return cache.frames;
+  }
+  const from = needFrom;
+  const to = frameNo + TRAIL_WINDOW_LOOKAHEAD;
   try {
     const r = await fetch(
-      `/api/runs/${state.runId}/tracklets/range?from=${from}&to=${frameNo}`
+      `/api/runs/${state.runId}/tracklets/range?from=${from}&to=${to}`
     ).then((r) => r.json());
-    const grouped = r.frames || {};
-    state.trailCache.clear();
-    state.trailCache.set(cacheKey, grouped);
-    return grouped;
+    state.trailCache = { from, to, frames: r.frames || {} };
+    return state.trailCache.frames;
   } catch (_) { return {}; }
 }
 
@@ -253,6 +286,7 @@ async function drawOverlay() {
   syncCanvasSize();
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+  await ensureFramesWindow(video.currentTime * 1000);
   const frameNo = currentFrameNo();
   if (frameNo == null) { frameInfo.classList.add("hidden"); return; }
   if (frameNo !== lastDrawnFrame) {

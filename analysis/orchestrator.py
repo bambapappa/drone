@@ -25,13 +25,17 @@ import random
 import time as _time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from analysis.ingest import FrameStore, VideoMeta
-from analysis.registry import appearance_hist
 from analysis.store import ArtifactStore
+
+if TYPE_CHECKING:
+    # Avoid a runtime circular import: identity imports OfflineConfig from
+    # this module, so AssociationResult is only needed for the P3 return type.
+    from analysis.identity import AssociationResult
 
 FLOW_W = 480
 
@@ -103,6 +107,31 @@ class OfflineConfig:
     reid_max_gap_s: float = 60.0
     reid_max_dist_frac: float = 0.45
 
+    # ---- P3 identity (global tracklet association) ----
+    # Per-detection appearance embedding. None/missing weights → HSV-only
+    # embedder (the carried-forward appearance_hist). A weights path present
+    # on disk → OSNet primary with HSV fallback below reid_floor. The floor
+    # is a deliberate, documented degradation for small/distant people at
+    # altitude (10 px crops are below any ReID model's input), not a bug.
+    reid_weights: str | None = None
+    reid_floor: int = 32  # min crop side (px) below which the HSV fallback fires
+
+    # P3 clustering gates. The spatio-temporal gate generalizes the live
+    # registry's reid_max_dist_frac × diag × (1+gap) rule (registry.py
+    # _match_lost); the temporal-overlap exclusion is the offline-only hard
+    # constraint that is impossible live (live never has the full frame set).
+    p3_sim_thresh: float = 0.86  # appearance cosine to merge two tracklets
+    p3_min_gap_s: float = 0.0  # offline, non-overlap is the real constraint
+    # (the live 0.3s proximity heuristic is moot once
+    # the full frame set is available — overlap exclusion
+    # subsumes it); kept as a knob for jitter suppression
+    p3_max_gap_s: float = 60.0  # beyond this, a re-entry is implausible
+    p3_max_dist_frac: float = 0.45  # dist ≤ frac × diag × (1 + gap_s)
+    p3_confirm_s: float = 2.0  # a person counts only after existing this long
+    # Margin below p3_sim_thresh that still counts as an "uncertain" near-
+    # merge for the honesty band ("N unika, varav M osäkra sammanslagningar").
+    p3_uncertain_margin: float = 0.04
+
     # Situation assessment
     hazard_min_area: float = 0.004
     hazard_hold_s: float = 2.0
@@ -132,6 +161,14 @@ class OfflineConfig:
             "pip_autodetect": self.pip_autodetect,
             "seed": self.seed,
             "track_buffer_s": self.track_buffer_s,
+            "reid_weights": self.reid_weights,
+            "reid_floor": self.reid_floor,
+            "p3_sim_thresh": self.p3_sim_thresh,
+            "p3_min_gap_s": self.p3_min_gap_s,
+            "p3_max_gap_s": self.p3_max_gap_s,
+            "p3_max_dist_frac": self.p3_max_dist_frac,
+            "p3_confirm_s": self.p3_confirm_s,
+            "p3_uncertain_margin": self.p3_uncertain_margin,
         }
 
 
@@ -237,10 +274,12 @@ class OfflineOrchestrator:
         """P1 detection pass: tiled inference over every frame.
 
         Persists raw detections (never tracker-adjusted — P1 has no tracker
-        at all) plus a raw per-detection appearance embedding (HSV
-        histogram) to the sidecar store. The embedding cache is new: the old
-        registry.py only kept an EMA-blended gallery, which is insufficient
-        for the global re-ID in Phase 3.
+        at all) plus a per-detection appearance embedding to the sidecar
+        store. The embedding is the identity substrate P3 clusters over:
+        OSNet when weights are present, HSV otherwise, with HSV as the
+        deliberate fallback for crops below the ReID floor (see
+        analysis.embedding). The `embedding_method` field tags each
+        detection so a consumer knows which space its vector is in.
 
         Stateless and checkpointed/resumable: the only thing that crosses
         the checkpoint boundary is the frame/det_id watermark, so a resumed
@@ -294,6 +333,7 @@ class OfflineOrchestrator:
 
         # Lazy-load the detector (heavy import)
         from analysis.detector import Detector
+        from analysis.embedding import make_embedder
 
         detector = Detector(
             model_path=self.config.model,
@@ -305,6 +345,10 @@ class OfflineOrchestrator:
             threat_classes=self.config.threat_classes,
             tiles=self.config.tiles,
         )
+        # Embedder is constructed once (the OSNet model load is expensive);
+        # imported lazily so tests can swap in a FakeEmbedder the same way
+        # they swap FakeDetector in for the Detector.
+        embedder = make_embedder(self.config)
 
         total_frames = self.meta.total_frames
         processed = 0
@@ -338,14 +382,21 @@ class OfflineOrchestrator:
                     if self._in_ignore(cx / w, cy / h):
                         continue
 
-                    # Raw per-detection appearance embedding — the cache that
-                    # enables global re-ID in Phase 3. Stored per detection, not
-                    # EMA-blended, so backward/global association is possible.
+                    # Per-detection appearance embedding — the identity
+                    # substrate P3 clusters over. Stored per detection, not
+                    # EMA-blended, so backward/global association is possible
+                    # (the live registry only kept a blended gallery). The
+                    # method tag records which embedding space this vector is
+                    # in: "osnet" (dedicated ReID) or "hsv" (the fallback for
+                    # crops below the ReID floor). Non-human detections and
+                    # degenerate crops get a null embedding + method.
                     embedding = None
+                    embedding_method = None
                     if d.is_human:
-                        hist = appearance_hist(frame, d.xyxy)
-                        if hist is not None:
-                            embedding = hist.tolist()
+                        result = embedder.embed(frame, d.xyxy)
+                        if result is not None:
+                            embedding = result.vector.tolist()
+                            embedding_method = result.method
 
                     det_record = {
                         "frame_no": frame_no,
@@ -356,6 +407,7 @@ class OfflineOrchestrator:
                         "cls_id": d.cls_id,
                         "is_human": d.is_human,
                         "embedding": embedding,
+                        "embedding_method": embedding_method,
                     }
                     self.store.add_detection(pass_name, frame_no, det_id, det_record)
                     det_id += 1
@@ -477,3 +529,94 @@ class OfflineOrchestrator:
             "fps_effective": round(processed / max(elapsed, 0.001), 1),
         }
         self.store.record_pass_complete(pass_name, stats)
+
+    # ---- P3: Identity pass (global tracklet association) ----
+
+    P3_PASS_NAME = "p3_identity"
+
+    def _effective_dims(self) -> tuple[int, int]:
+        """The frame size P1/P2 actually processed (after optional ROI crop),
+        without decoding a frame. P3 uses this for the frame diagonal that
+        scales the spatio-temporal gate."""
+        w, h = self.meta.width, self.meta.height
+        roi = self.config.analysis_roi
+        if roi is not None:
+            rx, ry, rw, rh = roi
+            x0, y0 = int(rx * w), int(ry * h)
+            x1, y1 = min(w, int((rx + rw) * w)), min(h, int((ry + rh) * h))
+            if x1 - x0 >= 32 and y1 - y0 >= 32:
+                w, h = x1 - x0, y1 - y0
+        return w, h
+
+    def run_pass_p3(self) -> "AssociationResult | None":
+        """P3 identity pass: global re-association of P2 tracklets into persons.
+
+        Reads P1's per-detection embeddings (joined to P2's tracklets via
+        det_id), aggregates each tracklet's appearance into a per-method
+        centroid, then runs constrained agglomerative clustering — merging
+        tracklet pairs into persons gated by hard temporal-overlap exclusion,
+        spatio-temporal plausibility, and appearance similarity (see
+        analysis.identity for the full design).
+
+        Like P2, this pass is never checkpointed and always re-runs in full:
+        it is deterministic given the same P1+P2 output and consumes no
+        inference, so re-running produces byte-identical persons + assoc_audit.
+        Returns the AssociationResult (or None if P2 isn't complete and the
+        gate refused to run).
+        """
+        pass_name = self.P3_PASS_NAME
+        pass_meta = {
+            "description": "P3 identity — global tracklet association into persons",
+            "config": self.config.to_dict(),
+            "fps": self.meta.fps,
+        }
+        self.store.record_pass_start(pass_name, pass_meta)
+
+        # Gate on P2 success, the same way the CLI gates P2 on P1: refusing to
+        # run P3 over an incomplete artifact prevents a persons/ table built
+        # from a truncated tracklet set that the manifest would then present
+        # as final.
+        p2_info = self.store._manifest.get("passes", {}).get(self.P2_PASS_NAME, {})
+        if p2_info.get("status") != "complete":
+            self.store.record_pass_error(pass_name, f"P2 not complete (status: {p2_info.get('status')})")
+            return None
+
+        from analysis.identity import associate, build_tracklet_profiles
+
+        self.store.start_fresh_pass_output("persons", pass_name)
+
+        tracklet_rows = list(self.store.iter_tracklets(self.P2_PASS_NAME))
+        detection_by_id = {rec["det_id"]: rec for rec in self.store.iter_detections(self.P1_PASS_NAME)}
+
+        t_start = _time.monotonic()
+        profiles = build_tracklet_profiles(tracklet_rows, detection_by_id, self.meta.fps)
+        w, h = self._effective_dims()
+        frame_diag = float(np.hypot(w, h))
+        result = associate(profiles, self.config, frame_diag)
+
+        for person in result.persons:
+            self.store.add_person(
+                pass_name,
+                person.person_id,
+                {
+                    "tracklet_ids": person.tracklet_ids,
+                    "embedding_centroids": person.embedding_centroids,
+                    "embedding_counts": person.embedding_counts,
+                    "first_seen": person.first_seen,
+                    "last_seen": person.last_seen,
+                    "confirmation_state": person.confirmation_state,
+                    "assoc_audit": person.assoc_audit,
+                },
+            )
+
+        elapsed = _time.monotonic() - t_start
+        stats = {
+            "tracklets_in": len(profiles),
+            "persons_out": len(result.persons),
+            "confirmed_persons": result.confirmed_count,
+            "uncertain_merges": result.uncertain_merges,
+            "frame_diag": round(frame_diag, 1),
+            "elapsed_s": round(elapsed, 3),
+        }
+        self.store.record_pass_complete(pass_name, stats)
+        return result

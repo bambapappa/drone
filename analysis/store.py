@@ -4,21 +4,26 @@ Schema (per architecture report §3):
   frames/            per frame: frame_no (PK), pts_ms, stab_offset [dx,dy]
   detections/        P1 output only — raw predict boxes, never tracker-
                      adjusted: frame_no, det_id, xyxy_raw, conf, class,
-                     embedding_ref (raw per-detection appearance vector)
+                     embedding (raw per-detection appearance vector),
+                     embedding_method ("osnet" | "hsv")
   tracklets/         P2 output — one row per (track_id, frame): tracklet_id,
                      frame_no, det_id (references back to detections/),
                      cls, conf, xyxy (tracker/Kalman-adjusted box). Tracker
                      output lives here; detections/xyxy_raw is never
                      overwritten by it.
+  persons/           P3 output — one row per identity: person_id,
+                     tracklet_ids [...], embedding_centroid (per method),
+                     first_seen/last_seen (video-time), confirmation state,
+                     assoc_audit [{tracklet pair, appearance sim,
+                     spatio-temporal gate values, rule}]
   manifest.json      video hash, config hash, model+weights versions, seed,
                      code version, pass log
 
 Each table is a directory of JSONL files, one per pass. The manifest ties
 everything together and enables bit-identical re-runs.
 
-Other tables (persons/, trajectories/, events/, annotations/) are later
-phases' concern but the schema is designed so they slot in without
-restructuring.
+Other tables (trajectories/, events/, annotations/) are later phases'
+concern but the schema is designed so they slot in without restructuring.
 """
 
 from __future__ import annotations
@@ -94,7 +99,8 @@ class ArtifactStore:
           frames/           # frame-level data (JSONL per pass)
           detections/       # P1's raw per-detection data (JSONL per pass)
           tracklets/        # P2's per-(track_id, frame) tracked boxes (JSONL per pass)
-          checkpoints/      # P1 checkpoint state (P2 is never checkpointed)
+          persons/          # P3's per-identity records + assoc_audit (JSONL per pass)
+          checkpoints/      # P1 checkpoint state (P2/P3 are never checkpointed)
     """
 
     def __init__(self, output_dir: str, video_hash: str, config_hash: str, run_id: str | None = None):
@@ -114,7 +120,7 @@ class ArtifactStore:
         open_existing()'s job, and only when explicitly requested via --resume.
         """
         self.run_dir.mkdir(parents=True, exist_ok=True)
-        for sub in ("frames", "detections", "tracklets", "checkpoints"):
+        for sub in ("frames", "detections", "tracklets", "persons", "checkpoints"):
             (self.run_dir / sub).mkdir(exist_ok=True)
 
         now = datetime.now(timezone.utc).isoformat()
@@ -311,6 +317,42 @@ class ArtifactStore:
     def iter_tracklets(self, pass_name: str):
         """Yield persisted tracklet-frame rows for a pass, in write order."""
         fpath = self.run_dir / "tracklets" / f"{pass_name}.jsonl"
+        if not fpath.exists():
+            return
+        with open(fpath) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    yield json.loads(line)
+
+    def add_person(self, pass_name: str, person_id: int, data: dict[str, Any]) -> None:
+        """Write a P3 identity record to persons/<pass_name>.jsonl.
+
+        `data` must contain at minimum (architecture report §3 persons/ schema):
+        {'tracklet_ids': [int, ...],
+         'embedding_centroids': {method: [float, ...], ...},
+         'first_seen': float, 'last_seen': float (video-time seconds),
+         'confirmation_state': str,
+         'assoc_audit': [{tracklet_a, tracklet_b, appearance_sim, gap_s,
+                          dist, dist_limit, rule, merged}, ...]}
+
+        assoc_audit is load-bearing, not cosmetic logging: it is what lets a
+        reviewer (a later phase) see *why* two tracklets became one person,
+        and what a manual split/merge correction would act on. Every merge
+        decision — and the near-merges that make up the uncertainty band —
+        is recorded here.
+        """
+        fpath = self.run_dir / "persons" / f"{pass_name}.jsonl"
+        data = dict(data)
+        data["person_id"] = person_id
+        json_line = json.dumps(data, separators=(",", ":"), ensure_ascii=False) + "\n"
+        with open(fpath, "a") as f:
+            f.write(json_line)
+
+    def iter_persons(self, pass_name: str):
+        """Yield persisted P3 person records for a pass, in write order
+        (which is person_id order — P3 assigns ids deterministically)."""
+        fpath = self.run_dir / "persons" / f"{pass_name}.jsonl"
         if not fpath.exists():
             return
         with open(fpath) as f:

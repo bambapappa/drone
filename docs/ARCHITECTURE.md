@@ -106,9 +106,9 @@ Skillnad mot realtidspipelinen: en process, sekventiella pass i stället för
 render-/detect-trådar, och **videotid** (`t = bildruta/fps`, PTS-korrigerad)
 i stället för `time.monotonic()`. Resultatet skrivs till ett versionerat
 sidecar-arkiv (`manifest.json` + JSONL i `frames/`, `detections/`,
-`tracklets/`) i stället för att strömmas till en webbklient. Körs via
-`analyze <film>` (CLI) eller `docker compose -f docker-compose.yml -f
+`tracklets/`, `persons/`) i stället för att strömmas till en webbklient. Körs
+via `analyze <film>` (CLI) eller `docker compose -f docker-compose.yml -f
 docker-compose.offline.yml run --rm analyze <film>`.
 
 Modulkarta, artefaktschema och passordning (P1 detektion → P2 spårning →
-senare pass) finns i [AGENTS.md](../AGENTS.md).
+P3 identitet) finns i [AGENTS.md](../AGENTS.md).

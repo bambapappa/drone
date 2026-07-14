@@ -25,3 +25,7 @@ videos/*
 runs/
 models/*
 !models/.gitkeep
+
+# Offline analysis output
+analysis-output/
+*_analysis/

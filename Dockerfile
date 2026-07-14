@@ -26,6 +26,7 @@ ENV MODEL=/models/${MODEL} \
     VIDEO_DIR=/videos
 
 COPY app/ ./app/
+COPY analysis/ ./analysis/
 
 EXPOSE 8000
 

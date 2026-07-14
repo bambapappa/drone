@@ -275,7 +275,7 @@ def _temporal_overlap(a: _Cluster, b: _Cluster) -> bool:
     return not a.frames.isdisjoint(b.frames)
 
 
-def _bridging_pair(a: _Cluster, b: _Cluster, fps: float) -> tuple[float, float, float] | None:
+def _bridging_pair(a: _Cluster, b: _Cluster) -> tuple[float, float, float] | None:
     """Find the temporally-closest non-overlapping cross-pair of tracklets.
 
     Returns (gap_s, dist_pixels, dist_limit_pixels) for the bridging pair, or
@@ -325,7 +325,11 @@ def associate(
     # audit accumulated per surviving cluster id (keyed by the lowest member
     # tracklet_id, which is stable across merges since absorb never renames).
     audit: dict[int, list[AuditEvent]] = {cid: [] for cid in clusters}
-    uncertain_seen: set[tuple[int, int]] = set()
+    # Cluster-id pairs (aid, bid) already given a blocked AuditEvent — cluster
+    # ids are stable (a surviving cluster keeps its original key), so this set
+    # prevents the same pair from being recorded again on a later round.
+    # uncertain_merges is derived from this set's size: single source of truth.
+    recorded_blocked: set[tuple[int, int]] = set()
 
     sim_thresh = config.p3_sim_thresh
     uncertain_lo = sim_thresh - config.p3_uncertain_margin
@@ -350,25 +354,58 @@ def associate(
                 # twins seen together — exactly the B4 ambiguity the honesty
                 # band exists to surface).
                 if _temporal_overlap(ca, cb):
-                    if sim >= uncertain_lo:
-                        uncertain_seen.add((aid, bid))
+                    if sim >= uncertain_lo and (aid, bid) not in recorded_blocked:
+                        recorded_blocked.add((aid, bid))
+                        audit[aid].append(
+                            AuditEvent(
+                                tracklet_a=aid,
+                                tracklet_b=bid,
+                                appearance_sim=sim,
+                                method=method,
+                                gap_s=0.0,
+                                dist=0.0,
+                                dist_limit=0.0,
+                                rule="blocked:temporal_overlap",
+                            )
+                        )
                     continue
 
-                bridge = _bridging_pair(ca, cb, 0.0)
+                bridge = _bridging_pair(ca, cb)
                 if bridge is None:
                     continue
                 gap, dist, _ = bridge
                 dist_limit = config.p3_max_dist_frac * frame_diag * (1.0 + gap)
 
                 # Record near-merges in the uncertainty band: appearance
-                # promising but a gate rejected the merge.
-                if sim >= uncertain_lo and (
-                    gap < config.p3_min_gap_s
+                # promising but a gate rejected the merge. Reason follows the
+                # same precedence as the gate cascade below (appearance, then
+                # gap, then spatial).
+                gate_failed = (
+                    sim < sim_thresh
+                    or gap < config.p3_min_gap_s
                     or gap > config.p3_max_gap_s
                     or dist > dist_limit
-                    or sim < sim_thresh
-                ):
-                    uncertain_seen.add((aid, bid))
+                )
+                if sim >= uncertain_lo and gate_failed and (aid, bid) not in recorded_blocked:
+                    recorded_blocked.add((aid, bid))
+                    if sim < sim_thresh:
+                        reason = "appearance"
+                    elif gap < config.p3_min_gap_s or gap > config.p3_max_gap_s:
+                        reason = "gap"
+                    else:
+                        reason = "spatial"
+                    audit[aid].append(
+                        AuditEvent(
+                            tracklet_a=aid,
+                            tracklet_b=bid,
+                            appearance_sim=sim,
+                            method=method,
+                            gap_s=gap,
+                            dist=dist,
+                            dist_limit=dist_limit,
+                            rule=f"blocked:{reason}",
+                        )
+                    )
 
                 if sim < sim_thresh:
                     continue
@@ -433,7 +470,9 @@ def associate(
                 assoc_audit=[e.to_dict() for e in sorted(audit[min(cl.tracklet_ids)], key=_audit_sort)],
             )
         )
-    return AssociationResult(persons=persons, confirmed_count=confirmed, uncertain_merges=len(uncertain_seen))
+    return AssociationResult(
+        persons=persons, confirmed_count=confirmed, uncertain_merges=len(recorded_blocked)
+    )
 
 
 def _merge_better(a: tuple, b: tuple) -> bool:

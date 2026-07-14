@@ -111,6 +111,13 @@ class TestTemporalOverlapExclusion:
         assert len(res.persons) == 2
         # Same-clothing twins seen together is the B4 ambiguity -> uncertainty band
         assert res.uncertain_merges >= 1
+        # The blocked decision must be recorded in assoc_audit, not just counted.
+        audit = res.persons[0].assoc_audit + res.persons[1].assoc_audit
+        blocked = [e for e in audit if e["rule"] == "blocked:temporal_overlap"]
+        assert len(blocked) == 1
+        assert blocked[0]["tracklet_a"] == 1 and blocked[0]["tracklet_b"] == 2
+        assert blocked[0]["appearance_sim"] > cfg.p3_sim_thresh
+        assert blocked[0]["gap_s"] == 0.0 and blocked[0]["dist"] == 0.0 and blocked[0]["dist_limit"] == 0.0
 
     def test_partially_overlapping_excluded(self):
         cfg = OfflineConfig()
@@ -129,6 +136,10 @@ class TestSpatioTemporalGate:
         b = _profile(2, 10, 19, RED, start_center=(490, 100), end_center=(490, 100))
         res = associate([a, b], cfg, DIAG)
         assert len(res.persons) == 2  # blocked by spatial gate
+        audit = res.persons[0].assoc_audit + res.persons[1].assoc_audit
+        blocked = [e for e in audit if e["rule"] == "blocked:spatial"]
+        assert len(blocked) == 1
+        assert blocked[0]["dist"] > blocked[0]["dist_limit"]
 
     def test_far_reentry_allowed_after_long_gap(self):
         # The (1+gap) term relaxes the gate with time: after a long gap the
@@ -146,6 +157,10 @@ class TestSpatioTemporalGate:
         b = _profile(2, 100, 109, RED, start_center=(55, 100), end_center=(60, 100))
         res = associate([a, b], cfg, DIAG)
         assert len(res.persons) == 2  # 9s gap > max_gap_s -> blocked
+        audit = res.persons[0].assoc_audit + res.persons[1].assoc_audit
+        blocked = [e for e in audit if e["rule"] == "blocked:gap"]
+        assert len(blocked) == 1
+        assert blocked[0]["gap_s"] > cfg.p3_max_gap_s
 
 
 class TestAppearanceGate:
@@ -181,6 +196,10 @@ class TestHonestCounting:
         res = associate([a, b], cfg, DIAG)
         assert len(res.persons) == 2  # not merged (below thresh)
         assert res.uncertain_merges == 1  # but in the honesty band
+        audit = res.persons[0].assoc_audit + res.persons[1].assoc_audit
+        blocked = [e for e in audit if e["rule"] == "blocked:appearance"]
+        assert len(blocked) == 1
+        assert blocked[0]["appearance_sim"] < cfg.p3_sim_thresh
 
     def test_confirmed_count_excludes_transient(self):
         cfg = OfflineConfig(p3_confirm_s=2.0)
@@ -216,6 +235,23 @@ class TestDeterminism:
             assert p1.confirmation_state == p2.confirmation_state
         assert r1.confirmed_count == r2.confirmed_count
         assert r1.uncertain_merges == r2.uncertain_merges
+
+    def test_blocked_events_identical_across_runs(self):
+        def run():
+            cfg = OfflineConfig()
+            profs = [
+                _profile(1, 0, 9, RED, start_center=(50, 100), end_center=(50, 100)),
+                _profile(2, 0, 9, RED, start_center=(400, 100), end_center=(400, 100)),
+            ]
+            return associate(profs, cfg, DIAG)
+
+        r1 = run()
+        r2 = run()
+        assert r1.uncertain_merges == r2.uncertain_merges == 1
+        audit1 = r1.persons[0].assoc_audit + r1.persons[1].assoc_audit
+        audit2 = r2.persons[0].assoc_audit + r2.persons[1].assoc_audit
+        assert audit1 == audit2
+        assert any(e["rule"] == "blocked:temporal_overlap" for e in audit1)
 
     def test_input_order_does_not_change_result(self):
         """Agglomerative clustering must be order-independent: shuffling the

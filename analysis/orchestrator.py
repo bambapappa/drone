@@ -616,7 +616,7 @@ class OfflineOrchestrator:
             "confirmed_persons": result.confirmed_count,
             "uncertain_merges": result.uncertain_merges,
             "frame_diag": round(frame_diag, 1),
-            "elapsed_s": round(elapsed, 1),
+            "elapsed_s": round(elapsed, 3),
         }
         self.store.record_pass_complete(pass_name, stats)
         return result

@@ -25,10 +25,27 @@ Phase 2 implements two kinds:
                  browser; this module never renders a frame — that is the
                  "one annotated-frame renderer" rule from report §2.5)
 
-Phase 3 will add (without restructuring this module):
-  - verdicts:    confirm/reject/note on a specific event_id
-  - identity corrections: split/merge person_id at time t with a reason
-  - operator-notes import: timestamped rows from the live session
+Phase 3 adds two more kinds (without restructuring this module):
+  - verdicts:       confirm/reject/note on a specific event_id. Unlike
+                    bookmarks/screenshots (one row = one entity, tombstone to
+                    delete), a verdict's *entity* is the event_id and it can
+                    change state repeatedly (unreviewed -> confirmed -> a
+                    note edit -> rejected, ...). Every write appends a new
+                    complete row; there is no delete. The read side reduces
+                    to the latest row per event_id (see `all_verdicts`) —
+                    this keeps the full review history in the log (an
+                    auditor can see every state change) while giving callers
+                    a simple "current state" view. Crucially, this is still
+                    a separate log from events/<pass>.jsonl: the engine's
+                    events table keeps its frozen `review: unreviewed`
+                    default forever (see analysis/events.py's Event
+                    docstring), and the API layer merges the latest verdict
+                    on top when serving events to the review UI.
+  - operator_notes: imported field notes (one row = one entity, tombstone to
+                    delete a bad import line), same shape as bookmarks.
+
+Identity corrections (split/merge person_id) remain a later phase — not
+implemented here.
 """
 
 from __future__ import annotations
@@ -41,7 +58,16 @@ from typing import Any, Iterable
 
 BOOKMARKS = "bookmarks"
 SCREENSHOTS = "screenshots"
+VERDICTS = "verdicts"
+OPERATOR_NOTES = "operator_notes"
 PHASE2_KINDS = (BOOKMARKS, SCREENSHOTS)
+# Entity-per-row kinds: one row = one thing, tombstone-deletable, exactly
+# like bookmarks/screenshots. Verdicts are NOT in this set — they are keyed
+# by event_id with latest-row-wins semantics instead (see `all_verdicts`).
+ENTITY_KINDS = (BOOKMARKS, SCREENSHOTS, OPERATOR_NOTES)
+ALL_KINDS = (BOOKMARKS, SCREENSHOTS, VERDICTS, OPERATOR_NOTES)
+
+REVIEW_STATES = ("unreviewed", "confirmed", "rejected")
 
 
 def _utc_now() -> str:
@@ -77,7 +103,7 @@ class AnnotationStore:
     # ---- path helpers ----
 
     def _log_path(self, kind: str) -> Path:
-        if kind not in PHASE2_KINDS:
+        if kind not in ALL_KINDS:
             raise ValueError(f"unknown annotation kind: {kind!r}")
         return self.annotations_dir / f"{kind}.jsonl"
 
@@ -204,11 +230,97 @@ class AnnotationStore:
         self._append_tombstone(SCREENSHOTS, annotation_id)
         return True
 
+    # ---- verdicts (event confirm/reject/note) ----
+
+    def set_verdict(
+        self,
+        event_id: str,
+        state: str | None = None,
+        note: str | None = None,
+        reviewer: str | None = None,
+    ) -> dict[str, Any]:
+        """Append a new verdict row for `event_id`.
+
+        This is a partial update over the *previous* latest row for the same
+        event_id: any field left as None here carries forward the prior
+        value (defaulting to the engine's "unreviewed" state with no note/
+        reviewer if this is the first verdict). That lets the UI submit
+        "just a note edit" without having to resend the current state, or
+        "just a state change" without clobbering an existing note.
+
+        Every call appends a full row rather than mutating one in place —
+        the JSONL stays append-only and the state-transition history is
+        fully reconstructable, mirroring bookmarks/screenshots' discipline
+        even though the read-side semantics (latest-wins per key, not
+        live-rows-minus-tombstones) differ.
+        """
+        if state is not None and state not in REVIEW_STATES:
+            raise ValueError(f"unknown review state: {state!r}")
+        prior = self.get_verdict(event_id) or {
+            "state": "unreviewed",
+            "note": None,
+            "reviewer": None,
+        }
+        row = {
+            "event_id": event_id,
+            "state": state if state is not None else prior["state"],
+            "note": note if note is not None else prior.get("note"),
+            "reviewer": reviewer if reviewer is not None else prior.get("reviewer"),
+        }
+        return self._append(VERDICTS, row)
+
+    def get_verdict(self, event_id: str) -> dict[str, Any] | None:
+        """Latest verdict row for one event_id, or None if never reviewed."""
+        latest: dict[str, Any] | None = None
+        for row in self._iter_raw(VERDICTS):
+            if row.get("event_id") == event_id:
+                latest = row
+        return latest
+
+    def all_verdicts(self) -> dict[str, dict[str, Any]]:
+        """Latest verdict per event_id, keyed by event_id.
+
+        One pass over the log reducing to the last row per key — this is
+        the "latest-row-wins" reduction verdicts use instead of the
+        tombstone-filtering `_live_rows` bookmarks/screenshots use, since a
+        verdict's rows are a state-transition history for one key rather
+        than independent creatable/deletable entities."""
+        latest: dict[str, dict[str, Any]] = {}
+        for row in self._iter_raw(VERDICTS):
+            eid = row.get("event_id")
+            if eid is not None:
+                latest[eid] = row
+        return latest
+
+    # ---- operator notes (imported field observations) ----
+
+    def add_operator_note(self, t: float, text: str, raw_line: str | None = None) -> dict[str, Any]:
+        """Add one imported operator note at video time t (seconds).
+
+        `text` is the parsed free-text observation; `raw_line` is the
+        original input line verbatim (kept for audit — the parser that
+        produced `t`/`text` is deliberately forgiving of format variance, so
+        keeping the raw line lets a reviewer sanity-check a surprising parse
+        without re-opening the original import file)."""
+        return self._append(OPERATOR_NOTES, {"t": round(float(t), 3), "text": text, "raw_line": raw_line})
+
+    def list_operator_notes(self) -> list[dict[str, Any]]:
+        return self._live_rows(OPERATOR_NOTES)
+
+    def delete_operator_note(self, annotation_id: str) -> bool:
+        """Tombstone one imported note (e.g. a bad parse the reviewer wants
+        to drop). Idempotent, like delete_bookmark."""
+        live = {r["annotation_id"] for r in self.list_operator_notes()}
+        if annotation_id not in live:
+            return False
+        self._append_tombstone(OPERATOR_NOTES, annotation_id)
+        return True
+
     # ---- bulk read for the UI ----
 
     def all_annotations(self) -> dict[str, list[dict[str, Any]]]:
         """All live annotations grouped by kind, for the UI's initial load."""
-        return {kind: self._live_rows(kind) for kind in PHASE2_KINDS}
+        return {kind: self._live_rows(kind) for kind in ENTITY_KINDS}
 
     def export_payload(self) -> dict[str, Any]:
         """Snapshot for the JSON/CSV export bundle. The export includes only
@@ -216,6 +328,7 @@ class AnnotationStore:
         return {
             "bookmarks": self.list_bookmarks(),
             "screenshots": self.list_screenshots(),
+            "operator_notes": self.list_operator_notes(),
         }
 
     def close(self) -> None:

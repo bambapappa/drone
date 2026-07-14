@@ -21,6 +21,11 @@ Defaultvärdena matchar `docker-compose.offline.yml`s volymmonteringar, så
 `uvicorn review.main:app` (eller `make review`) fungerar utan konfiguration
 från repo-roten.
 
+Fas 3:s jämförelse-/debriefingslut (`/api/runs/{id}/comparison` och
+`.../debrief`) tar en valfri `tolerance_s`-frågeparameter (default `60.0`,
+se `review/comparison.py` för motiveringen) i stället för en miljövariabel
+— den är per-körning/exportval, inte en tjänstenivå-inställning.
+
 ## Videokälla
 
 | Variabel | Default | Beskrivning |

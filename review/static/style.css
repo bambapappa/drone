@@ -175,9 +175,43 @@ main { flex: 1; min-height: 0; }
   border-left: 1px solid #2a3540;
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 0;
   overflow: hidden;
 }
+
+/* Tab bar: one pane visible at a time so the sidebar doesn't grow unbounded
+   as Phase 3 adds more content (operator notes + comparison) alongside the
+   Phase 2 event/bookmark/screenshot cards. */
+#sidebar-tabs {
+  display: flex;
+  flex: 0 0 auto;
+  border-bottom: 1px solid #2a3540;
+}
+#sidebar-tabs .tab {
+  flex: 1;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--dim);
+  padding: 10px 4px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+  cursor: pointer;
+}
+#sidebar-tabs .tab.on { color: var(--fg); border-bottom-color: var(--accent); }
+#sidebar-tabs .tab:hover { color: var(--fg); }
+
+.tab-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+.tab-pane.hidden { display: none; }
+
 .card {
   display: flex;
   flex-direction: column;
@@ -186,6 +220,7 @@ main { flex: 1; min-height: 0; }
   padding: 10px 12px;
 }
 .card:last-child { border-bottom: 0; }
+.scroll-list.grow { max-height: none; flex: 1; }
 .card h3 {
   font-size: 11px;
   text-transform: uppercase;
@@ -255,12 +290,60 @@ main { flex: 1; min-height: 0; }
   padding-top: 8px;
   border-top: 1px solid #2a3540;
 }
-.inline-form input {
+.inline-form input, .inline-form textarea {
   background: var(--chip); color: var(--fg);
   border: 1px solid #2a3540; border-radius: 6px;
   padding: 6px 8px; font-size: 13px; min-width: 0;
+  font-family: inherit;
+  resize: vertical;
 }
 .inline-form button { padding: 6px 10px; font-size: 13px; }
+
+/* Review queue: sort control + confirm/reject/note actions per event. */
+.review-controls {
+  display: flex; align-items: center; gap: 6px;
+  margin-bottom: 8px; flex-wrap: wrap;
+}
+.review-controls select, .review-controls input[type="number"] {
+  background: var(--chip); color: var(--fg);
+  border: 1px solid #2a3540; border-radius: 6px;
+  padding: 4px 6px; font-size: 12px;
+}
+.review-controls label { font-size: 11px; color: var(--dim); }
+.review-controls input[type="number"] { width: 64px; }
+
+.card li .review-badge {
+  align-self: flex-start;
+  font-size: 10px; text-transform: uppercase; letter-spacing: .5px;
+  padding: 1px 6px; border-radius: 4px;
+  background: var(--chip); color: var(--dim);
+}
+.card li.review-confirmed .review-badge { background: #12401f; color: var(--ok); }
+.card li.review-rejected .review-badge { background: #4a1015; color: var(--danger); }
+
+.review-actions { display: flex; gap: 4px; margin-top: 2px; }
+.review-actions button {
+  background: transparent; color: var(--dim);
+  border: 1px solid #2a3540; border-radius: 4px;
+  padding: 1px 6px; font-size: 11px; cursor: pointer;
+}
+.review-actions .btn-confirm:hover { color: var(--ok); border-color: var(--ok); }
+.review-actions .btn-reject:hover { color: var(--danger); border-color: var(--danger); }
+.review-actions .btn-note:hover { color: var(--accent); border-color: var(--accent); }
+
+.note-form { margin-top: 4px; display: flex; gap: 4px; }
+.note-form input {
+  flex: 1; background: var(--chip); color: var(--fg);
+  border: 1px solid #2a3540; border-radius: 4px;
+  padding: 4px 6px; font-size: 12px;
+}
+.note-form button { padding: 3px 8px; font-size: 11px; }
+
+#operator-warnings li { color: var(--warn); font-size: 11px; font-style: italic; cursor: default; }
+#operator-warnings li:hover { background: transparent; }
+
+#compare-stats { margin: 8px 0; }
+#compare-list li .label { font-size: 12px; }
 
 button:not(.chip) {
   background: var(--chip); color: var(--fg);

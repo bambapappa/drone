@@ -110,6 +110,24 @@ make review                              # http://localhost:8001
 docker compose -f docker-compose.yml -f docker-compose.offline.yml up review
 ```
 
+### Utvärderingslager (fas 3)
+
+Samma granskningsvy (fliken **Granskning**) ger nu en granskningskö:
+sortera AI-händelserna på tid eller konfidens, hoppa mellan dem (video
+söker till start minus ~5 s, pausar automatiskt ~5 s efter slut), och
+bekräfta/avvisa/kommentera var och en. Granskningsbeslut skrivs till en
+egen tilläggsbar logg (aldrig in i AI-tabellen `events/`) och slås ihop
+vid läsning — en omkörning av analysen kan därför aldrig radera mänskligt
+granskningsarbete.
+
+Fliken **Operatör** importerar fältanteckningar från en insats
+(tidsstämplade rader, t.ex. `2 personer vid fordonet, 14:32` — tolkaren är
+överseende med format, se `review/operator_notes.py`), jämför dem mot
+AI-händelserna på tidsnärhet, och visar tre hinkar: **hittad av båda**,
+**endast AI**, **endast operatör**, med tidsskillnad där båda hittat samma
+sak. **Exportera debrief (HTML)** ger en fristående HTML-rapport (ingen
+server behövs för att öppna den) för den som inte var med på övningen.
+
 ## Utveckling
 
 ```bash

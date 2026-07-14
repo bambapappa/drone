@@ -376,6 +376,156 @@ async def test_screenshot_metadata_only(settings, run_id, client):
     assert r.json()["png_filename"] is None
 
 
+# ---- Phase 3: review queue (event verdicts) ----
+
+
+async def test_new_events_default_to_unreviewed(settings, run_id, client):
+    r = await client.get(f"/api/runs/{run_id}/events/stilla-000001")
+    assert r.json()["review"]["state"] == "unreviewed"
+
+
+async def test_confirm_event(settings, run_id, client):
+    r = await client.post(
+        f"/api/runs/{run_id}/events/stilla-000001/review",
+        data={"state": "confirmed", "reviewer": "Anna"},
+    )
+    assert r.status_code == 200
+    assert r.json()["state"] == "confirmed"
+    # The read paths reflect it.
+    r = await client.get(f"/api/runs/{run_id}/events/stilla-000001")
+    review = r.json()["review"]
+    assert review["state"] == "confirmed"
+    assert review["reviewer"] == "Anna"
+    assert review["reviewed_at"] is not None
+    r = await client.get(f"/api/runs/{run_id}/events")
+    ev = next(e for e in r.json()["events"] if e["event_id"] == "stilla-000001")
+    assert ev["review"]["state"] == "confirmed"
+
+
+async def test_reject_event(settings, run_id, client):
+    r = await client.post(f"/api/runs/{run_id}/events/hazard-000001/review", data={"state": "rejected"})
+    assert r.status_code == 200
+    assert r.json()["state"] == "rejected"
+
+
+async def test_note_only_update_keeps_prior_state(settings, run_id, client):
+    await client.post(f"/api/runs/{run_id}/events/stilla-000001/review", data={"state": "confirmed"})
+    r = await client.post(
+        f"/api/runs/{run_id}/events/stilla-000001/review",
+        data={"note": "ser ut som en figurant"},
+    )
+    assert r.json()["state"] == "confirmed"
+    assert r.json()["note"] == "ser ut som en figurant"
+
+
+async def test_review_unknown_event_404(settings, run_id, client):
+    r = await client.post(f"/api/runs/{run_id}/events/does-not-exist/review", data={"state": "confirmed"})
+    assert r.status_code == 404
+
+
+async def test_review_invalid_state_422(settings, run_id, client):
+    r = await client.post(f"/api/runs/{run_id}/events/stilla-000001/review", data={"state": "maybe"})
+    assert r.status_code == 422
+
+
+async def test_review_409_when_p5_not_run(settings, client):
+    store = ArtifactStore(str(settings.output_dir), "vh", "ch")
+    store.create()
+    store.close()
+    r = await client.post(f"/api/runs/{store.run_id}/events/ev-1/review", data={"state": "confirmed"})
+    assert r.status_code == 409
+
+
+# ---- Phase 3: operator-notes import ----
+
+
+async def test_import_operator_notes(settings, run_id, client):
+    text = "2 personer vid fordonet, 0:01\nrök vid ladan, 0:00"
+    r = await client.post(f"/api/runs/{run_id}/operator-notes/import", data={"text": text})
+    assert r.status_code == 201
+    body = r.json()
+    assert len(body["imported"]) == 2
+    assert body["warnings"] == []
+    r = await client.get(f"/api/runs/{run_id}/operator-notes")
+    assert r.json()["count"] == 2
+
+
+async def test_import_operator_notes_reports_warnings_but_keeps_good_lines(settings, run_id, client):
+    text = "2 personer vid fordonet, 0:01\nden här raden går inte att tolka"
+    r = await client.post(f"/api/runs/{run_id}/operator-notes/import", data={"text": text})
+    assert r.status_code == 201
+    body = r.json()
+    assert len(body["imported"]) == 1
+    assert len(body["warnings"]) == 1
+    assert body["warnings"][0]["line"] == 2
+
+
+async def test_delete_operator_note(settings, run_id, client):
+    r = await client.post(f"/api/runs/{run_id}/operator-notes/import", data={"text": "text, 0:01"})
+    aid = r.json()["imported"][0]["annotation_id"]
+    r = await client.delete(f"/api/runs/{run_id}/operator-notes/{aid}")
+    assert r.status_code == 200
+    r = await client.get(f"/api/runs/{run_id}/operator-notes")
+    assert r.json()["count"] == 0
+
+
+async def test_delete_unknown_operator_note_404(settings, run_id, client):
+    r = await client.delete(f"/api/runs/{run_id}/operator-notes/nonexistent")
+    assert r.status_code == 404
+
+
+# ---- Phase 3: comparison + debrief ----
+
+
+async def test_comparison_buckets(settings, run_id, client):
+    # stilla-000001 is at t_start=0.4; a note at t=0.5 is within tolerance.
+    await client.post(f"/api/runs/{run_id}/operator-notes/import", data={"text": "text, 0:00.5"})
+    r = await client.get(f"/api/runs/{run_id}/comparison")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["counts"]["both"] == 1
+    assert body["counts"]["ai_only"] == 1  # hazard-000001 unmatched
+    assert body["counts"]["operator_only"] == 0
+    assert "delta_s" in body["both"][0]
+
+
+async def test_comparison_tolerance_override(settings, run_id, client):
+    await client.post(f"/api/runs/{run_id}/operator-notes/import", data={"text": "text, 5:00"})
+    r = await client.get(f"/api/runs/{run_id}/comparison", params={"tolerance_s": 1})
+    body = r.json()
+    assert body["counts"]["both"] == 0
+    assert body["counts"]["operator_only"] == 1
+
+
+async def test_comparison_409_when_p5_not_run(settings, client):
+    store = ArtifactStore(str(settings.output_dir), "vh", "ch")
+    store.create()
+    store.close()
+    r = await client.get(f"/api/runs/{store.run_id}/comparison")
+    assert r.status_code == 409
+
+
+async def test_comparison_reflects_confirmed_verdict(settings, run_id, client):
+    await client.post(f"/api/runs/{run_id}/events/stilla-000001/review", data={"state": "confirmed"})
+    r = await client.get(f"/api/runs/{run_id}/comparison")
+    ev = next(e for e in r.json()["ai_only"] if e["event_id"] == "stilla-000001")
+    assert ev["review"]["state"] == "confirmed"
+
+
+async def test_debrief_is_standalone_html(settings, run_id, client):
+    r = await client.get(f"/api/runs/{run_id}/debrief")
+    assert r.status_code == 200
+    assert "text/html" in r.headers["content-type"]
+    assert "attachment" in r.headers["content-disposition"]
+    assert "Hittad av båda" in r.text
+    assert "<!doctype html>" in r.text.lower()
+
+
+async def test_debrief_404_for_unknown_run(settings, client):
+    r = await client.get("/api/runs/nonexistent/debrief")
+    assert r.status_code == 404
+
+
 # ---- path-traversal guards ----
 #
 # FastAPI's router rejects some malformed ids before our validator runs

@@ -86,7 +86,9 @@ analyze /videos/film.mp4
 
 Resultatet skrivs till ett versionerat sidecar-arkiv (`manifest.json` + JSONL)
 under `analysis-output/`. Nuvarande fas kör ingest (PTS-index, videohash,
-IR-PiP-lås) samt P1 (detektion) och P2 (spårning); modulkarta och detaljer i
+IR-PiP-lås), P1 (detektion, med utseende-embedding per detektion), P2
+(spårning) och P3 (global tracklet-associering till personer, med ärlig
+osäkerhetsbaserad unik-räkning); modulkarta och detaljer i
 [AGENTS.md](AGENTS.md).
 
 ## Utveckling

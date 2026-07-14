@@ -106,9 +106,24 @@ Skillnad mot realtidspipelinen: en process, sekventiella pass i stället för
 render-/detect-trådar, och **videotid** (`t = bildruta/fps`, PTS-korrigerad)
 i stället för `time.monotonic()`. Resultatet skrivs till ett versionerat
 sidecar-arkiv (`manifest.json` + JSONL i `frames/`, `detections/`,
-`tracklets/`, `persons/`) i stället för att strömmas till en webbklient. Körs
+`tracklets/`, `persons/`, `events/` samt en separat tilläggsbar
+`annotations/`-logg) i stället för att strömmas till en webbklient. Körs
 via `analyze <film>` (CLI) eller `docker compose -f docker-compose.yml -f
 docker-compose.offline.yml run --rm analyze <film>`.
 
 Modulkarta, artefaktschema och passordning (P1 detektion → P2 spårning →
-P3 identitet) finns i [AGENTS.md](../AGENTS.md).
+P3 identitet → P5 händelser) finns i [AGENTS.md](../AGENTS.md).
+
+### Granskningsvy (`review/`)
+
+Tunn klient + REST-API ovanpå sidecar-arkivet — importerar aldrig
+analysmotorn, läser bara det `analyze` skrev och skriver enbart till den
+separata `annotations/`-loggen (bokmärken, skärmdumpar). Uppspelning är
+native HTML5 `<video>`; overlay-canvasen synkas mot videons `currentTime`
+via `requestVideoFrameCallback` och `frames/meta`-PTS-indexet i stället för
+att strömmas från servern. Skärmdumpar komponeras klientsidan (video +
+canvas → PNG) — det finns bara en annoterad-bild-renderare, `snapshot.py`
+(se verktygstabellen ovan) förblir kvar enbart som fristående felsöknings-
+verktyg för realtidspipelinen. Körs via `uvicorn review.main:app` eller
+`docker compose -f docker-compose.yml -f docker-compose.offline.yml up
+review` (port 8001). Detaljer i [AGENTS.md](../AGENTS.md).

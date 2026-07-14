@@ -5,11 +5,13 @@ Usage:
     analyze <video> [--output DIR] [--model PATH] [--device DEVICE]
                     [--imgsz N] [--detect-conf F] [--display-conf F]
                     [--tiles N] [--seed N] [--resume RUN_ID | --resume latest]
-                    [--reid-weights PATH] [--reid-floor N] [--no-p3]
+                    [--reid-weights PATH] [--reid-floor N]
+                    [--no-p3] [--no-p5]
 
-Runs ingest + P1 (detection) + P2 (tracking) + P3 (identity) end-to-end. The
-analysis sidecar is written to <output>/<run_id>/ with manifest.json, frames/,
-detections/, tracklets/, persons/, and checkpoints/.
+Runs ingest + P1 (detection) + P2 (tracking) + P3 (identity) + P5 (events)
+end-to-end. The analysis sidecar is written to <output>/<run_id>/ with
+manifest.json, frames/, detections/, tracklets/, persons/, events/,
+annotations/, and checkpoints/.
 
 P1 is stateless and checkpointed/resumable: by default every invocation
 mints a fresh run_id and a fresh sidecar — re-running the same command does
@@ -20,17 +22,20 @@ config hash, code version, and tracker library version all match the
 current invocation, so it can never silently splice together a run across a
 config, code, or tracker-library change.
 
-P2 always re-runs in full (it is cheap and deterministic given P1's
-persisted detections) — it is never checkpointed and --resume does not
-affect it.
+P2/P3/P5 always re-run in full (cheap and deterministic given the same P1
+output) — they are never checkpointed and --resume does not affect them.
 
 P3 (identity) re-associates P2's tracklets into persons via global
 agglomerative clustering gated by temporal-overlap exclusion, spatio-
-temporal plausibility, and appearance similarity. It always re-runs in full
-and is deterministic given the same P1+P2 output. The reported unique-person
+temporal plausibility, and appearance similarity. The reported unique-person
 count is honestly uncertainty-banded ("N unika, varav M osäkra
 sammanslagningar") — same-clothing confusion is a fundamental appearance-
 method limit (DECISIONS B4) that the tool surfaces rather than hides.
+
+P5 (events) replays the carried-over BehaviorAnalyzer + SituationAnalyzer
+over the persisted tracklets + frame stream and diffs their per-frame status
+into discrete STILLA / MOT_FARA / HAZARD events with onset/offset timestamps
+and confidence, keyed to person_id when P3 ran. IRRATIONELL is Phase 4.
 """
 
 from __future__ import annotations
@@ -103,7 +108,14 @@ def main() -> None:
         action="store_true",
         help="Stop after P1+P2 (detection+tracking) without running the P3 "
         "identity pass. By default P3 runs and the honest unique-person count "
-        "is reported.",
+        "is reported. Implies --no-p5 (P5 needs P3's tracklet→person map for "
+        "person-keyed events).",
+    )
+    ap.add_argument(
+        "--no-p5",
+        action="store_true",
+        help="Skip the P5 event-derivation pass. By default P5 runs after P3 "
+        "and writes events/ for the review UI.",
     )
     ap.add_argument(
         "--resume",
@@ -206,6 +218,9 @@ def main() -> None:
             config_hash=config_hash,
         )
         store.create()
+    # Record the source video basename so the review UI can locate the file
+    # through VIDEO_DIR. Stored as basename only — portable across machines.
+    store.set_video_filename(video_path.name)
     print(f"Sidecar store:    {store.run_dir}")
     print(f"  Run ID:         {store.run_id}")
     print()
@@ -289,6 +304,28 @@ def main() -> None:
         f"  (totalt {len(result.persons)} identiteter, varav "
         f"{len(result.persons) - confirmed} transienta < {config.p3_confirm_s:g}s)"
     )
+
+    # ---- P5 Event Derivation Pass ----
+    if args.no_p5:
+        store.close()
+        total_elapsed = time.monotonic() - t0
+        print()
+        print(f"Total: {total_elapsed:.1f}s")
+        print(f"Sidecar: {store.run_dir}")
+        return
+
+    print()
+    print("--- P5 Events ---")
+    n_events = orchestrator.run_pass_p5()
+
+    p5_info = store._manifest.get("passes", {}).get(OfflineOrchestrator.P5_PASS_NAME, {})
+    p5_stats = p5_info.get("stats", {})
+    by_cat = p5_stats.get("by_category", {})
+    print(f"  Events:         {n_events}")
+    if by_cat:
+        breakdown = ", ".join(f"{k}={v}" for k, v in sorted(by_cat.items()))
+        print(f"  Per kategori:   {breakdown}")
+    print(f"  Time:           {p5_stats.get('elapsed_s', '?')}s")
 
     store.close()
     total_elapsed = time.monotonic() - t0

@@ -620,3 +620,105 @@ class OfflineOrchestrator:
         }
         self.store.record_pass_complete(pass_name, stats)
         return result
+
+    # ---- P5: Event derivation pass (always a full re-run) ----
+
+    P5_PASS_NAME = "p5_events"
+
+    def run_pass_p5(self) -> int:
+        """P5 event derivation: replay BehaviorAnalyzer + SituationAnalyzer
+        over P2's tracklets (+ the frame stream) and diff their per-frame
+        status into discrete STILLA / MOT_FARA / HAZARD events.
+
+        This is the marriage of the report's P4 (per-frame behavior/situation
+        status) and P5 (status diffing): the analyzers are stateless per-
+        call, so there's no value in persisting their per-frame output
+        separately — we compute and diff in one pass.
+
+        Person-keyed events (STILLA/MOT_FARA) are tagged with P3's person_id
+        when P3 ran; otherwise person_id is null. HAZARD events are never
+        person-keyed.
+
+        Like P2/P3, always re-runs in full and is deterministic given the
+        same P1+P2(+P3) output. No inference is re-run; only the cheap
+        behavior/situation heuristics are replayed over the persisted
+        tracklets and a fresh frame decode (the situation analyzer needs
+        pixels). Returns the number of events emitted.
+
+        IRRATIONELL is explicitly Phase 4 per the report's build order and is
+        not derived here — the sub-signal set in §4 will slot in as another
+        status stream feeding the same diff, without restructuring this pass.
+        """
+        pass_name = self.P5_PASS_NAME
+        pass_meta = {
+            "description": "P5 event derivation — behavior/situation status diffed into events",
+            "config": self.config.to_dict(),
+            "fps": self.meta.fps,
+        }
+        self.store.record_pass_start(pass_name, pass_meta)
+        self.store.start_fresh_pass_output("events", pass_name)
+
+        # Gate on P2: behavior events need tracklets. P3 is optional; when it
+        # didn't run (--no-p3) person_id stays null on every event.
+        p2_info = self.store._manifest.get("passes", {}).get(self.P2_PASS_NAME, {})
+        if p2_info.get("status") != "complete":
+            self.store.record_pass_error(pass_name, f"P2 not complete (status: {p2_info.get('status')})")
+            return 0
+
+        # Build the tracklet→person map from P3 if present.
+        person_by_tracklet: dict[int, int] = {}
+        p3_info = self.store._manifest.get("passes", {}).get(self.P3_PASS_NAME, {})
+        if p3_info.get("status") == "complete":
+            for person in self.store.iter_persons(self.P3_PASS_NAME):
+                for tid in person.get("tracklet_ids", []):
+                    person_by_tracklet[int(tid)] = int(person["person_id"])
+
+        from analysis.events import derive_events
+
+        tracklet_rows = list(self.store.iter_tracklets(self.P2_PASS_NAME))
+        w, h = self._effective_dims()
+
+        frame_store = FrameStore(self.meta.path, self.meta)
+        t_start = _time.monotonic()
+        total_events = 0
+        try:
+            # The situation analyzer needs the frame stream; we feed frames
+            # by re-decoding (same as P2). ROI is applied to match P1/P2.
+            def _frames():
+                for _ in range(self.meta.total_frames):
+                    frame = frame_store.read()
+                    if frame is None:
+                        break
+                    yield self._apply_roi(frame)
+
+            events = derive_events(
+                tracklet_rows,
+                person_by_tracklet=person_by_tracklet,
+                frames=_frames(),
+                fps=self.meta.fps,
+                frame_w=w,
+                frame_h=h,
+                config=self.config,
+                ignore_regions=list(self.config.ignore_regions),
+            )
+        finally:
+            frame_store.close()
+
+        for ev in events:
+            self.store.add_event(pass_name, ev.event_id, ev.to_dict())
+            total_events += 1
+
+        # Per-category breakdown for the manifest (handy for the review UI's
+        # summary header without having to walk the events file).
+        by_cat: dict[str, int] = {}
+        for ev in events:
+            by_cat[ev.category] = by_cat.get(ev.category, 0) + 1
+        elapsed = _time.monotonic() - t_start
+        stats = {
+            "events_out": total_events,
+            "by_category": by_cat,
+            "p3_used": bool(person_by_tracklet),
+            "elapsed_s": round(elapsed, 3),
+        }
+        self.store.record_pass_complete(pass_name, stats)
+        return total_events

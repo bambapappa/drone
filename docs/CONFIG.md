@@ -10,6 +10,17 @@ Det fristående offline-batchverktyget (`analysis/`, se
 [ARCHITECTURE.md](ARCHITECTURE.md)) konfigureras i stället via CLI-flaggor
 (`analyze --help`), inte dessa miljövariabler.
 
+Granskningsvyn (`review/`) tar två egna miljövariabler:
+
+| Variabel | Default | Beskrivning |
+|---|---|---|
+| `ANALYSIS_OUTPUT_DIR` | `analysis-output` | Var sidecar-arkiven som `analyze` skrev ligger (läses och annoteras). |
+| `VIDEO_DIR` | `videos` | Var originalfilmerna ligger, för uppspelning i `<video>`-elementet. |
+
+Defaultvärdena matchar `docker-compose.offline.yml`s volymmonteringar, så
+`uvicorn review.main:app` (eller `make review`) fungerar utan konfiguration
+från repo-roten.
+
 ## Videokälla
 
 | Variabel | Default | Beskrivning |

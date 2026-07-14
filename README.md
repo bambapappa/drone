@@ -85,11 +85,30 @@ analyze /videos/film.mp4
 ```
 
 Resultatet skrivs till ett versionerat sidecar-arkiv (`manifest.json` + JSONL)
-under `analysis-output/`. Nuvarande fas kör ingest (PTS-index, videohash,
+under `analysis-output/`. Körningen omfattar ingest (PTS-index, videohash,
 IR-PiP-lås), P1 (detektion, med utseende-embedding per detektion), P2
-(spårning) och P3 (global tracklet-associering till personer, med ärlig
-osäkerhetsbaserad unik-räkning); modulkarta och detaljer i
-[AGENTS.md](AGENTS.md).
+(spårning), P3 (global tracklet-associering till personer, med ärlig
+osäkerhetsbaserad unik-räkning) och P5 (härledning av STILLA/MOT FARA/HAZARD-
+händelser med tidsstämplar för granskningsskiktet). IRRATIONELL är fas 4.
+Modulkarta och detaljer i [AGENTS.md](AGENTS.md).
+
+### Granskningsvy (fas 2)
+
+Efter en analyskörning kan resultatet granskas i en tunn webbklient som
+spelar upp originalfilen med native HTML5 `<video>`, ritar boxar/flaggor/
+spår synkroniserat via PTS-indexet, listar AI-händelser med hopp-till-
+tid, sparar bokmärken och skärmdumpar (komponerade i webbläsaren), och
+exporterar händelseloggen som CSV/JSON. Användargränssnittet är svenska
+enda; annoteringar (bokmärken, skärmdumpar) lagras separat från AI-tabellerna
+i en tilläggsbar logg som överlever en omkörning.
+
+```bash
+# Native (efter make venv):
+make review                              # http://localhost:8001
+
+# Docker (port 8001 — skild från realtids-API:et på 8000):
+docker compose -f docker-compose.yml -f docker-compose.offline.yml up review
+```
 
 ## Utveckling
 

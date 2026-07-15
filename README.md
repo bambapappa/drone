@@ -88,8 +88,8 @@ Resultatet skrivs till ett versionerat sidecar-arkiv (`manifest.json` + JSONL)
 under `analysis-output/`. Körningen omfattar ingest (PTS-index, videohash,
 IR-PiP-lås), P1 (detektion, med utseende-embedding per detektion), P2
 (spårning), P3 (global tracklet-associering till personer, med ärlig
-osäkerhetsbaserad unik-räkning) och P5 (härledning av STILLA/MOT FARA/HAZARD-
-händelser med tidsstämplar för granskningsskiktet). IRRATIONELL är fas 4.
+osäkerhetsbaserad unik-räkning) och P5 (härledning av STILLA/MOT FARA/
+IRRATIONELLT/HAZARD-händelser med tidsstämplar för granskningsskiktet).
 Modulkarta och detaljer i [AGENTS.md](AGENTS.md).
 
 ### Granskningsvy (fas 2)
@@ -127,6 +127,31 @@ AI-händelserna på tidsnärhet, och visar tre hinkar: **hittad av båda**,
 **endast AI**, **endast operatör**, med tidsskillnad där båda hittat samma
 sak. **Exportera debrief (HTML)** ger en fristående HTML-rapport (ingen
 server behövs för att öppna den) för den som inte var med på övningen.
+
+### IRRATIONELLT beteende, faromarkör och tidslinje (fas 4)
+
+P5 härleder nu en tredje personbunden flaggkategori, **IRRATIONELLT**: en
+transparent regelensemble över samma stabiliserade, kroppslängds-
+normaliserade rörelsemönster som STILLA/MOT FARA — inte en tränad modell
+(inga träningsdata finns ännu, och fasta trösklar är förutsägbara på osedd
+film). Fem delsignaler (rörelsemönster/väg, panikspurt, motflöde,
+pendling, frys-och-rusa) vägs samman; varje händelse redovisar exakt vilka
+delsignaler som slog till och deras uppmätta värden (aldrig en bar
+etikett) — samma bevis-inte-påstående-princip som P3:s `assoc_audit`.
+STILLA (skadad) vinner alltid över IRRATIONELLT vid samma bildruta; MOT
+FARA är en helt egen kategori utan företrädesregel. Detaljer i
+[AGENTS.md](AGENTS.md) och `analysis/irrational.py`.
+
+Granskningsvyn får en **faromarkör** granskaren kan placera eller flytta
+genom att klicka i bilden — MOT FARA räknas om mot hela filmen på några
+sekunder, eftersom trajektorierna redan finns lagrade och omräkningen bara
+är en ren funktion över dem (ingen ny detektering, ingen ny spårning). Detta
+går inte i realtidssystemet, som bara kunde flagga från det ögonblick en
+operatör pekade — här är "vem rörde sig mot den här punkten, någonsin" en
+fråga, inte en ny insats. En **tidslinje**-flik visar varje persons
+flaggor, farhändelser, bokmärken och importerade operatörsanteckningar som
+en horisontell remsa — klicka var som helst för att söka videon dit,
+vilket gör en 16-minutersfilm till en översikt på några sekunder.
 
 ## Utveckling
 

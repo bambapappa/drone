@@ -30,6 +30,17 @@ Three groups of endpoints, mirroring the architecture report's interface rule
     GET    /api/runs/{rid}/comparison              — AI-vs-operator 3-bucket comparison
     GET    /api/runs/{rid}/debrief                 — standalone HTML debrief export
 
+  Retroactive hazard marker (Phase 4 — report §5.1):
+    GET    /api/runs/{rid}/hazard-marker           — current marker (or none)
+    POST   /api/runs/{rid}/hazard-marker           — place/move the marker
+    DELETE /api/runs/{rid}/hazard-marker           — clear override, revert to engine MOT_FARA
+    When a marker is active, GET .../events (and .../comparison, .../debrief)
+    transparently serve MOT_FARA recomputed against it (review/hazard.py) —
+    events/<pass>.jsonl is never rewritten, exactly like Phase 3's verdicts
+    overlay. Existing Phase 3 verdicts on the original MOT_FARA events are
+    best-effort carried forward onto the recomputed ones
+    (_carry_forward_mot_fara_reviews), keyed by tracklet_id + time proximity.
+
 Path traversal guards: run_id and annotation_id are validated strictly
 (alphanumeric + dash/underscore) before touching the filesystem — the
 review API serves files from a configured directory and a malicious path
@@ -49,12 +60,14 @@ from typing import Any
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response
 from fastapi.responses import FileResponse, JSONResponse
 
+from analysis.events import CATEGORY_MOT_FARA
 from analysis.orchestrator import OfflineOrchestrator
 from analysis.store import ArtifactStore
 from review.annotations import AnnotationStore
 from review.comparison import DEFAULT_TOLERANCE_S, compare_events_to_notes
 from review.config import ReviewSettings, get_settings
 from review.debrief import render_debrief_html
+from review.hazard import recompute_mot_fara
 from review.operator_notes import parse_operator_notes
 
 router = APIRouter(prefix="/api")
@@ -108,6 +121,102 @@ def _merge_verdict(event: dict[str, Any], verdict: dict[str, Any] | None) -> dic
         "reviewed_at": verdict.get("created_at"),
     }
     return event
+
+
+def _person_by_tracklet(store: ArtifactStore) -> dict[int, int]:
+    """tracklet_id -> person_id, from P3 (empty if P3 didn't run). Shared by
+    the tracklet overlay endpoint and the hazard-marker recompute path so
+    the two never drift on how person_id is joined."""
+    person_by_tracklet: dict[int, int] = {}
+    p3 = OfflineOrchestrator.P3_PASS_NAME
+    if store.manifest.get("passes", {}).get(p3, {}).get("status") == "complete":
+        for p in store.iter_persons(p3):
+            for tid in p.get("tracklet_ids", []):
+                person_by_tracklet[int(tid)] = int(p["person_id"])
+    return person_by_tracklet
+
+
+def _run_fps(store: ArtifactStore) -> float:
+    p1 = OfflineOrchestrator.P1_PASS_NAME
+    return store.manifest.get("passes", {}).get(p1, {}).get("meta", {}).get("fps", 25.0)
+
+
+def _best_review_match(target: dict[str, Any], candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Pick the reviewed original MOT_FARA event that best corresponds to a
+    recomputed one: prefer time-overlap, else the closest t_start."""
+    overlapping = [
+        c for c in candidates if c["t_start"] <= target["t_end"] and c["t_end"] >= target["t_start"]
+    ]
+    pool = overlapping or candidates
+    return min(pool, key=lambda c: abs(c["t_start"] - target["t_start"]))
+
+
+def _carry_forward_mot_fara_reviews(
+    original: list[dict[str, Any]], recomputed: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Best-effort carry-forward of Phase 3 verdicts from the engine's
+    original MOT_FARA events onto Phase 4's hazard-marker recompute.
+
+    MOT_FARA event ids and spans are not stable across different hazard
+    marker positions, so this cannot be an exact identity match — it matches
+    by tracklet_id plus closest/overlapping time span, which is the best
+    available signal since a tracklet's MOT_FARA span usually only shifts
+    slightly when the danger point moves. tracklet_id (not person_id) is the
+    matching key because person_id is None on every MOT_FARA event whenever
+    P3 didn't run, which would collapse distinct people into one bucket and
+    risk carrying one person's verdict onto another's recomputed event.
+    Only original events carrying a non-default verdict (state !=
+    "unreviewed" or a note) are considered, so an untouched recomputed event
+    keeps its default unreviewed review field.
+    """
+    by_tracklet: dict[Any, list[dict[str, Any]]] = {}
+    for ev in original:
+        review = ev.get("review") or {}
+        if review.get("state", "unreviewed") == "unreviewed" and not review.get("note"):
+            continue
+        by_tracklet.setdefault(ev.get("evidence", {}).get("tracklet_id"), []).append(ev)
+    if not by_tracklet:
+        return recomputed
+    result = []
+    for ev in recomputed:
+        candidates = by_tracklet.get(ev.get("evidence", {}).get("tracklet_id"))
+        if candidates:
+            match = _best_review_match(ev, candidates)
+            ev = dict(ev)
+            ev["review"] = match["review"]
+        result.append(ev)
+    return result
+
+
+def _apply_hazard_override(
+    events: list[dict[str, Any]], store: ArtifactStore, ann: AnnotationStore
+) -> list[dict[str, Any]]:
+    """Overlay a retroactive hazard-marker recompute onto the engine's
+    MOT_FARA events, if the reviewer has placed a marker (Phase 4, report
+    §5.1). Never rewrites events/<pass>.jsonl — this runs at read time only,
+    exactly mirroring how _merge_verdict overlays Phase 3's verdicts. When no
+    marker is active (never set, or explicitly cleared), returns `events`
+    unchanged — the engine's own time-weighted-mean MOT_FARA stands.
+    """
+    marker = ann.get_hazard_marker()
+    if marker is None or marker.get("x") is None:
+        return events
+    p2 = OfflineOrchestrator.P2_PASS_NAME
+    if store.manifest.get("passes", {}).get(p2, {}).get("status") != "complete":
+        return events
+    recomputed = recompute_mot_fara(
+        store,
+        person_by_tracklet=_person_by_tracklet(store),
+        fps=_run_fps(store),
+        hazard_x=marker["x"],
+        hazard_y=marker["y"],
+    )
+    original_mot_fara = [e for e in events if e.get("category") == CATEGORY_MOT_FARA]
+    kept = [e for e in events if e.get("category") != CATEGORY_MOT_FARA]
+    recomputed = _carry_forward_mot_fara_reviews(original_mot_fara, recomputed)
+    merged = kept + recomputed
+    merged.sort(key=lambda e: (e["t_start"], e["category"], e["event_id"]))
+    return merged
 
 
 def _resolve_video_path(settings: ReviewSettings, store: ArtifactStore) -> Path | None:
@@ -190,20 +299,30 @@ async def get_run(run_id: str, settings: ReviewSettings = Depends(get_settings))
 # ---- artifact reads ----
 
 
-@router.get("/runs/{run_id}/events")
-async def get_events(run_id: str, settings: ReviewSettings = Depends(get_settings)) -> dict[str, Any]:
-    """Full P5 event log in onset order (P5 persists them in this order).
-
-    Each event's `review` field reflects the latest human verdict (Phase 3),
-    overlaid at read time from the annotations layer — see `_merge_verdict`.
-    """
+def _merged_events(settings: ReviewSettings, run_id: str) -> tuple[ArtifactStore, list[dict[str, Any]]]:
+    """The full event log as served to readers: engine output, with Phase 3
+    verdicts and Phase 4's hazard-marker MOT_FARA override both overlaid.
+    Shared by get_events/get_event/_load_events_and_notes so the three
+    endpoints can never drift on what "the current event log" means."""
     store = _open_store(settings, run_id)
     p5 = OfflineOrchestrator.P5_PASS_NAME
     if store.manifest.get("passes", {}).get(p5, {}).get("status") != "complete":
         raise HTTPException(status_code=409, detail="P5 har inte körts för den här körningen")
-    events = list(store.iter_events(p5))
-    verdicts = _annotation_store(settings, run_id).all_verdicts()
-    events = [_merge_verdict(ev, verdicts.get(ev["event_id"])) for ev in events]
+    ann = _annotation_store(settings, run_id)
+    verdicts = ann.all_verdicts()
+    events = [_merge_verdict(ev, verdicts.get(ev["event_id"])) for ev in store.iter_events(p5)]
+    events = _apply_hazard_override(events, store, ann)
+    return store, events
+
+
+@router.get("/runs/{run_id}/events")
+async def get_events(run_id: str, settings: ReviewSettings = Depends(get_settings)) -> dict[str, Any]:
+    """Full event log in onset order.
+
+    Each event's `review` field reflects the latest human verdict (Phase 3);
+    MOT_FARA reflects the reviewer's hazard marker when one is active
+    (Phase 4) — see `_merged_events`."""
+    _, events = _merged_events(settings, run_id)
     return {"events": events, "count": len(events)}
 
 
@@ -212,12 +331,10 @@ async def get_event(
     run_id: str, event_id: str, settings: ReviewSettings = Depends(get_settings)
 ) -> dict[str, Any]:
     _validate_id(event_id, pattern=_EVENT_ID_RE, label="event_id")
-    store = _open_store(settings, run_id)
-    p5 = OfflineOrchestrator.P5_PASS_NAME
-    for ev in store.iter_events(p5):
+    _, events = _merged_events(settings, run_id)
+    for ev in events:
         if ev.get("event_id") == event_id:
-            verdict = _annotation_store(settings, run_id).get_verdict(event_id)
-            return _merge_verdict(ev, verdict)
+            return ev
     raise HTTPException(status_code=404, detail="okänd händelse")
 
 
@@ -270,12 +387,7 @@ async def get_tracklets(
     rows = [r for r in store.iter_tracklets(p2) if int(r.get("frame_no", -1)) == frame]
     # Join tracklet → person_id from P3 (if available) so the overlay can
     # show the stable person label rather than the internal tracklet id.
-    person_by_tracklet: dict[int, int] = {}
-    p3 = OfflineOrchestrator.P3_PASS_NAME
-    if store.manifest.get("passes", {}).get(p3, {}).get("status") == "complete":
-        for p in store.iter_persons(p3):
-            for tid in p.get("tracklet_ids", []):
-                person_by_tracklet[int(tid)] = int(p["person_id"])
+    person_by_tracklet = _person_by_tracklet(store)
     for r in rows:
         tid = int(r.get("tracklet_id", -1))
         r["person_id"] = person_by_tracklet.get(tid)
@@ -552,16 +664,11 @@ async def delete_operator_note(
 def _load_events_and_notes(
     settings: ReviewSettings, run_id: str
 ) -> tuple[ArtifactStore, list[dict[str, Any]], list[dict[str, Any]]]:
-    """Shared read path for /comparison and /debrief: P5 events (with the
-    latest verdict overlaid) + live imported operator notes."""
-    store = _open_store(settings, run_id)
-    p5 = OfflineOrchestrator.P5_PASS_NAME
-    if store.manifest.get("passes", {}).get(p5, {}).get("status") != "complete":
-        raise HTTPException(status_code=409, detail="P5 har inte körts för den här körningen")
-    ann = _annotation_store(settings, run_id)
-    verdicts = ann.all_verdicts()
-    events = [_merge_verdict(ev, verdicts.get(ev["event_id"])) for ev in store.iter_events(p5)]
-    notes = ann.list_operator_notes()
+    """Shared read path for /comparison and /debrief: the merged event log
+    (verdicts + hazard-marker override, see _merged_events) + live imported
+    operator notes."""
+    store, events = _merged_events(settings, run_id)
+    notes = _annotation_store(settings, run_id).list_operator_notes()
     return store, events, notes
 
 
@@ -609,3 +716,43 @@ async def get_debrief(
         media_type="text/html",
         headers={"Content-Disposition": f'attachment; filename="{run_id}_debrief.html"'},
     )
+
+
+# ---- Phase 4: retroactive hazard marker ----
+
+
+@router.get("/runs/{run_id}/hazard-marker")
+async def get_hazard_marker(run_id: str, settings: ReviewSettings = Depends(get_settings)) -> dict[str, Any]:
+    """Current hazard marker, or `{"active": false}` if none is set (never
+    placed, or explicitly cleared) — the engine's own detected danger point
+    is in effect in that case."""
+    marker = _annotation_store(settings, run_id).get_hazard_marker()
+    if marker is None or marker.get("x") is None:
+        return {"active": False}
+    return {"active": True, "x": marker["x"], "y": marker["y"], "note": marker.get("note")}
+
+
+@router.post("/runs/{run_id}/hazard-marker", status_code=201)
+async def set_hazard_marker(
+    run_id: str,
+    x: float = Form(..., ge=0),
+    y: float = Form(..., ge=0),
+    note: str | None = Form(None, max_length=4000),
+    settings: ReviewSettings = Depends(get_settings),
+) -> dict[str, Any]:
+    """Place or move the hazard marker (report §5.1). `x`/`y` are frame-pixel
+    coordinates — the reviewer clicks the overlay canvas, which is already
+    sized to the video's intrinsic pixels (see review/static/app.js), so no
+    conversion happens client- or server-side. Takes effect immediately: the
+    very next GET .../events call recomputes MOT_FARA against it."""
+    return _annotation_store(settings, run_id).set_hazard_marker(x=x, y=y, note=note)
+
+
+@router.delete("/runs/{run_id}/hazard-marker", status_code=200)
+async def delete_hazard_marker(
+    run_id: str, settings: ReviewSettings = Depends(get_settings)
+) -> dict[str, Any]:
+    """Clear the manual override — MOT_FARA reverts to the engine's own
+    time-weighted-mean danger point on the next read."""
+    _annotation_store(settings, run_id).clear_hazard_marker()
+    return {"active": False}

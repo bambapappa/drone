@@ -145,3 +145,47 @@ Granskningsbeslut (bekräfta/avvisa/kommentera) skrivs till
 `analysis/events.py`). API:t slår ihop det senaste verdiktet ovanpå
 händelsen vid läsning (`review/routes.py:_merge_verdict`); en omkörning av
 analysen skriver om `events/` men rör aldrig `annotations/`.
+
+### IRRATIONELLT, faromarkör och tidslinje (fas 4)
+
+**`analysis/irrational.py`** härleder en tredje personbunden kategori,
+IRRATIONELLT, ur samma tracklet-trajektorier STILLA/MOT FARA redan läser
+(foot-center-position, kroppslängds-normaliserad hastighet — ingen ny
+koordinatkonvention). Fem rena delsignalfunktioner (`_eval_erratic`,
+`_eval_sprint`, `_eval_counterflow`, `_eval_oscillation`,
+`_eval_freeze_bolt`), vägda samman till en poäng med ett
+uthållighetskrav (mirrorar `BehaviorAnalyzer`s `still_since`/
+`toward_since`-hysteres). Varje händelses `evidence.sub_signals` namnger
+exakt vilka delsignaler som slog till och deras uppmätta värden — aldrig
+en bar etikett, samma disciplin som P3:s `assoc_audit`. Precedensregel:
+STILLA vinner över IRRATIONELLT på samma bildruta (implementerad genom att
+`derive_events` samlar STILLA-händelsernas täckta bildrutor per tracklet
+och tvingar dem till "ej utlöst" i ensemblen); MOT FARA har ingen
+precedensrelation till någotdera.
+
+**Faromarkör (`review/hazard.py`):** granskaren kan retroaktivt placera
+eller flytta en faropunkt i granskningsvyn; `recompute_mot_fara` läser
+P2:s redan lagrade tracklets och kör om `analysis.events.derive_behavior_events`
+med den nya faropunkten — ingen ny P1–P3-körning. Detta är medvetet en
+**delad ren funktion**, inte en dubblering av beteendematematiken (som
+uppdraget explicit varnar för), och är förenligt med gränssnittsregeln
+"granskningsvyn importerar aldrig motorn": den regeln skyddar mot att
+anropa P1/P2/P3:s tunga, tillståndsbärande, modelldrivna pass, inte mot
+att återanvända en redan ren, redan artefakt-baserad härledningsfunktion
+— exakt den distinktion rapportens §6 drar ("allt som kan uttryckas som en
+fråga mot artefakten är billigt"). Den omräknade MOT FARA-mängden rör
+aldrig `events/<pass>.jsonl`; den slås ihop vid läsning precis som
+verdikter (`review/routes.py:_apply_hazard_override`). Att flytta markören
+carry:ar best-effort fram en tidigare avgiven Fas 3-verdikt från den
+ursprungliga MOT FARA-händelsen till dess omräknade motsvarighet
+(`_carry_forward_mot_fara_reviews`, nyckelad på tracklet_id + tidsnärhet —
+inte person_id, som är null när P3 inte kördes). Faromarkörens
+position lagras i `annotations/hazard_marker.jsonl` (senaste-rad-vinner,
+som verdikter). Se DECISIONS.md B26 för fullständigt resonemang.
+
+**Tidslinje:** en ny flik i granskningsvyn (`review/static/app.js:renderTimeline`)
+ritar en SVG-remsa med en rad per person (STILLA/MOT FARA/IRRATIONELLT-
+spann), en rad för farhändelser, en för bokmärken och en för importerade
+operatörsanteckningar — klick söker videon dit. Ren klientlogik över
+samma data som redan hämtas för händelselistan; inget nytt REST-anrop
+utöver det befintliga `/events`.

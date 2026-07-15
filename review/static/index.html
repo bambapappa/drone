@@ -45,6 +45,9 @@
       <button class="chip" id="btn-bookmark">🔖 Bokmärke</button>
       <button class="chip" id="btn-screenshot">📸 Skärmdump</button>
       <span class="spacer"></span>
+      <button class="chip" id="btn-hazard-marker" title="Klicka i bilden för att placera faromarkören">📍 Faromarkör</button>
+      <button class="chip hidden" id="btn-hazard-clear" title="Ta bort faromarkören, återgå till AI-detekterad fara">✕ Rensa markör</button>
+      <span class="spacer"></span>
       <button class="chip" id="btn-export-csv">Export CSV</button>
       <button class="chip" id="btn-export-json">Export JSON</button>
     </nav>
@@ -52,6 +55,7 @@
     <aside id="sidebar">
       <nav id="sidebar-tabs">
         <button class="tab on" data-tab="events">Granskning</button>
+        <button class="tab" data-tab="timeline">Tidslinje</button>
         <button class="tab" data-tab="bookmarks">Bokmärken</button>
         <button class="tab" data-tab="screenshots">Skärmdumpar</button>
         <button class="tab" data-tab="operator">Operatör</button>
@@ -67,6 +71,14 @@
           <button type="button" id="btn-next-unreviewed" class="small">Nästa ogranskad</button>
         </div>
         <ul id="event-list" class="scroll-list grow"><li class="dim">Inga händelser.</li></ul>
+      </section>
+
+      <section class="card tab-pane hidden" data-pane="timeline">
+        <h3>Tidslinje <span class="legend" id="timeline-legend"></span></h3>
+        <div id="timeline-scroll">
+          <div id="timeline-empty" class="dim">Ingen körning inläst.</div>
+          <svg id="timeline-svg" class="hidden" xmlns="http://www.w3.org/2000/svg"></svg>
+        </div>
       </section>
 
       <section class="card tab-pane hidden" data-pane="bookmarks">

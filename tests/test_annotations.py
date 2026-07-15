@@ -181,6 +181,42 @@ class TestVerdicts:
         assert states == ["confirmed", "rejected"]
 
 
+class TestHazardMarker:
+    """The Phase 4 retroactive hazard marker: a single evolving value (not
+    an entity set), latest-row-wins like verdicts, but keyless since only
+    one marker exists per run."""
+
+    def test_no_marker_returns_none(self, store: AnnotationStore):
+        assert store.get_hazard_marker() is None
+
+    def test_set_hazard_marker_returns_row(self, store: AnnotationStore):
+        row = store.set_hazard_marker(x=120.5, y=340.2, note="vid ladan")
+        assert row["x"] == 120.5
+        assert row["y"] == 340.2
+        assert row["note"] == "vid ladan"
+
+    def test_get_hazard_marker_returns_latest(self, store: AnnotationStore):
+        store.set_hazard_marker(x=100.0, y=100.0)
+        store.set_hazard_marker(x=200.0, y=250.0)
+        row = store.get_hazard_marker()
+        assert row["x"] == 200.0
+        assert row["y"] == 250.0
+
+    def test_clear_hazard_marker_returns_none_position(self, store: AnnotationStore):
+        store.set_hazard_marker(x=100.0, y=100.0)
+        store.clear_hazard_marker()
+        row = store.get_hazard_marker()
+        assert row is not None
+        assert row["x"] is None
+        assert row["y"] is None
+
+    def test_hazard_marker_log_is_append_only(self, store: AnnotationStore):
+        store.set_hazard_marker(x=100.0, y=100.0)
+        store.set_hazard_marker(x=200.0, y=200.0)
+        raw = (store.annotations_dir / "hazard_marker.jsonl").read_text().strip().splitlines()
+        assert len(raw) == 2
+
+
 class TestOperatorNotes:
     def test_add_operator_note_returns_row_with_id(self, store: AnnotationStore):
         row = store.add_operator_note(

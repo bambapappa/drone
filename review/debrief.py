@@ -35,6 +35,7 @@ from review.comparison import ComparisonResult, Match
 CATEGORY_LABEL = {
     "STILLA": "STILLA",
     "MOT_FARA": "MOT FARA",
+    "IRRATIONELL": "IRRATIONELLT",
     "HAZARD": "FARA",
 }
 
@@ -229,6 +230,7 @@ td.empty { color: #889; font-style: italic; text-align: center; padding: 14px; }
 .cat-tag { display: inline-block; padding: 1px 7px; border-radius: 4px; font-size: 11px; font-weight: 700; }
 .cat-STILLA { background: #5c1119; color: #ff8a95; }
 .cat-MOT_FARA { background: #5a3a00; color: #ffcb7a; }
+.cat-IRRATIONELL { background: #33184a; color: #a55eea; }
 .cat-HAZARD { background: #3a1d10; color: #ff9d75; }
 .state { font-size: 12px; }
 .state-confirmed { color: #1e8e4a; font-weight: 600; }

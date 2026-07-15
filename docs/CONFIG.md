@@ -26,6 +26,13 @@ Fas 3:s jämförelse-/debriefingslut (`/api/runs/{id}/comparison` och
 se `review/comparison.py` för motiveringen) i stället för en miljövariabel
 — den är per-körning/exportval, inte en tjänstenivå-inställning.
 
+Fas 4:s IRRATIONELLT-trösklar (`OfflineConfig`s `irr_*`-fält,
+`analysis/irrational.py`) och faromarkören (`review/hazard.py`,
+`POST /api/runs/{id}/hazard-marker`) följer samma mönster som `beh_*`:
+inga CLI-flaggor eller miljövariabler ännu — trösklarna är konstruktörs-
+defaultvärden, motiverade i modulens docstring, tills ett behov av att
+justera dem per körning uppstår.
+
 ## Videokälla
 
 | Variabel | Default | Beskrivning |

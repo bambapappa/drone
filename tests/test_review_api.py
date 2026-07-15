@@ -423,6 +423,262 @@ async def test_review_unknown_event_404(settings, run_id, client):
     assert r.status_code == 404
 
 
+# ---- Phase 4: retroactive hazard marker ----
+
+
+@pytest.fixture
+def moving_run_id(settings: ReviewSettings) -> str:
+    """A run with one tracklet moving steadily in +x — no MOT_FARA in the
+    engine's own P5 output (no hazard was ever detected), so any MOT_FARA
+    seen after placing a marker must come from the recompute path."""
+    store = ArtifactStore(str(settings.output_dir), "vh-moving", "ch-moving")
+    store.create()
+    store.set_video_filename("film.mp4")
+    store.record_pass_start(OfflineOrchestrator.P1_PASS_NAME, {"fps": 10.0})
+    store.record_pass_complete(OfflineOrchestrator.P1_PASS_NAME, {})
+    store.record_pass_start(OfflineOrchestrator.P2_PASS_NAME, {})
+    store.start_fresh_pass_output("tracklets", OfflineOrchestrator.P2_PASS_NAME)
+    for i in range(80):
+        x = 50.0 + i * 4.0
+        store.add_tracklet_frame(
+            OfflineOrchestrator.P2_PASS_NAME,
+            tracklet_id=1,
+            frame_no=i,
+            det_id=i,
+            data={"cls": "person", "conf": 0.9, "xyxy": [x, 100.0, x + 30.0, 180.0]},
+        )
+    store.record_pass_complete(OfflineOrchestrator.P2_PASS_NAME, {"total_tracklet_rows": 80})
+    store.record_pass_start(OfflineOrchestrator.P5_PASS_NAME, {"config": {}})
+    store.start_fresh_pass_output("events", OfflineOrchestrator.P5_PASS_NAME)
+    store.record_pass_complete(OfflineOrchestrator.P5_PASS_NAME, {"events_out": 0, "by_category": {}})
+    store.close()
+    return store.run_id
+
+
+async def test_hazard_marker_inactive_by_default(settings, moving_run_id, client):
+    r = await client.get(f"/api/runs/{moving_run_id}/hazard-marker")
+    assert r.status_code == 200
+    assert r.json() == {"active": False}
+
+
+async def test_placing_hazard_marker_recomputes_mot_fara(settings, moving_run_id, client):
+    # No MOT_FARA before the marker is placed (P5 emitted zero events).
+    r = await client.get(f"/api/runs/{moving_run_id}/events")
+    assert r.json()["count"] == 0
+
+    r = await client.post(
+        f"/api/runs/{moving_run_id}/hazard-marker",
+        data={"x": "2000", "y": "140"},
+    )
+    assert r.status_code == 201
+    assert r.json()["x"] == 2000.0
+
+    r = await client.get(f"/api/runs/{moving_run_id}/hazard-marker")
+    assert r.json() == {"active": True, "x": 2000.0, "y": 140.0, "note": None}
+
+    r = await client.get(f"/api/runs/{moving_run_id}/events")
+    body = r.json()
+    assert body["count"] >= 1
+    assert all(e["category"] == "MOT_FARA" for e in body["events"])
+
+
+async def test_clearing_hazard_marker_reverts_to_engine_output(settings, moving_run_id, client):
+    await client.post(f"/api/runs/{moving_run_id}/hazard-marker", data={"x": "2000", "y": "140"})
+    r = await client.get(f"/api/runs/{moving_run_id}/events")
+    assert r.json()["count"] >= 1
+
+    r = await client.delete(f"/api/runs/{moving_run_id}/hazard-marker")
+    assert r.status_code == 200
+    assert r.json() == {"active": False}
+
+    r = await client.get(f"/api/runs/{moving_run_id}/hazard-marker")
+    assert r.json() == {"active": False}
+    r = await client.get(f"/api/runs/{moving_run_id}/events")
+    assert r.json()["count"] == 0
+
+
+async def test_moving_marker_twice_to_same_position_is_deterministic(settings, moving_run_id, client):
+    async def events_snapshot():
+        r = await client.get(f"/api/runs/{moving_run_id}/events")
+        return r.json()["events"]
+
+    await client.post(f"/api/runs/{moving_run_id}/hazard-marker", data={"x": "2000", "y": "140"})
+    first = await events_snapshot()
+    await client.post(f"/api/runs/{moving_run_id}/hazard-marker", data={"x": "-500", "y": "400"})
+    await client.post(f"/api/runs/{moving_run_id}/hazard-marker", data={"x": "2000", "y": "140"})
+    back = await events_snapshot()
+    assert first == back
+
+
+@pytest.fixture
+def two_person_moving_run_id(settings: ReviewSettings) -> str:
+    """A run with two tracklets/persons: person 1 moves in -x (from x=3000
+    down), person 2 moves in +x (from x=50 up). The engine's own P5 output
+    already has MOT_FARA events for both (as if an earlier hazard was
+    detected at x=2000, which both are approaching), spanning t=4.5-7.9 —
+    the same span `recompute_mot_fara` derives for a marker placed at the
+    same spot, so the reviewer's original verdict is checkable against the
+    recompute. Moving the marker to x=3500 (beyond person 1's range, so
+    person 1 is now moving away from it) makes only person 2 continue to
+    qualify, and — since seq is assigned in tracklet-id order over however
+    many tracklets qualify — person 2's recomputed event then gets a
+    different event_id (seq 0 instead of 1) despite an identical time span
+    and person_id: exactly the case where a verdict keyed by event_id alone
+    would get lost."""
+    store = ArtifactStore(str(settings.output_dir), "vh-two-moving", "ch-two-moving")
+    store.create()
+    store.set_video_filename("film.mp4")
+    store.record_pass_start(OfflineOrchestrator.P1_PASS_NAME, {"fps": 10.0})
+    store.record_pass_complete(OfflineOrchestrator.P1_PASS_NAME, {})
+    store.record_pass_start(OfflineOrchestrator.P2_PASS_NAME, {})
+    store.start_fresh_pass_output("tracklets", OfflineOrchestrator.P2_PASS_NAME)
+    for i in range(80):
+        x1 = 3000.0 - i * 4.0
+        store.add_tracklet_frame(
+            OfflineOrchestrator.P2_PASS_NAME,
+            tracklet_id=1,
+            frame_no=i,
+            det_id=i,
+            data={"cls": "person", "conf": 0.9, "xyxy": [x1, 100.0, x1 + 30.0, 180.0]},
+        )
+        x2 = 50.0 + i * 4.0
+        store.add_tracklet_frame(
+            OfflineOrchestrator.P2_PASS_NAME,
+            tracklet_id=2,
+            frame_no=i,
+            det_id=1000 + i,
+            data={"cls": "person", "conf": 0.9, "xyxy": [x2, 100.0, x2 + 30.0, 180.0]},
+        )
+    store.record_pass_complete(OfflineOrchestrator.P2_PASS_NAME, {"total_tracklet_rows": 160})
+    store.record_pass_start(OfflineOrchestrator.P3_PASS_NAME, {})
+    store.start_fresh_pass_output("persons", OfflineOrchestrator.P3_PASS_NAME)
+    for tid, pid in ((1, 1), (2, 2)):
+        store.add_person(
+            OfflineOrchestrator.P3_PASS_NAME,
+            pid,
+            {
+                "tracklet_ids": [tid],
+                "embedding_centroids": {},
+                "embedding_counts": {},
+                "first_seen": 0.0,
+                "last_seen": 7.9,
+                "confirmation_state": "confirmed",
+                "assoc_audit": [],
+            },
+        )
+    store.record_pass_complete(OfflineOrchestrator.P3_PASS_NAME, {"persons_out": 2})
+    store.record_pass_start(OfflineOrchestrator.P5_PASS_NAME, {"config": {}})
+    store.start_fresh_pass_output("events", OfflineOrchestrator.P5_PASS_NAME)
+    for eid, pid in (("mot_fara-000000", 1), ("mot_fara-000001", 2)):
+        store.add_event(
+            OfflineOrchestrator.P5_PASS_NAME,
+            eid,
+            {
+                "category": "MOT_FARA",
+                "person_id": pid,
+                "t_start": 4.5,
+                "t_end": 7.9,
+                "confidence": 0.8,
+                "evidence": {"tracklet_id": pid},
+                "review": {"state": "unreviewed"},
+            },
+        )
+    store.record_pass_complete(
+        OfflineOrchestrator.P5_PASS_NAME, {"events_out": 2, "by_category": {"MOT_FARA": 2}}
+    )
+    store.close()
+    return store.run_id
+
+
+async def test_verdict_survives_hazard_marker_move_to_different_event_id(
+    settings, two_person_moving_run_id, client
+):
+    # Confirm person 2's engine-original MOT_FARA event, before any marker
+    # is placed.
+    r = await client.post(
+        f"/api/runs/{two_person_moving_run_id}/events/mot_fara-000001/review",
+        data={"state": "confirmed", "reviewer": "Anna"},
+    )
+    assert r.status_code == 200
+
+    # Marker A: both person 1 and person 2 qualify for MOT_FARA. Person 2's
+    # event lands second (tracklet id order), keeping event_id mot_fara-000001.
+    await client.post(f"/api/runs/{two_person_moving_run_id}/hazard-marker", data={"x": "2000", "y": "140"})
+    r = await client.get(f"/api/runs/{two_person_moving_run_id}/events")
+    events_a = r.json()["events"]
+    assert len(events_a) == 2
+    person2_event_a = next(e for e in events_a if e["person_id"] == 2)
+    assert person2_event_a["review"]["state"] == "confirmed"
+    assert person2_event_a["review"]["reviewer"] == "Anna"
+
+    # Marker B: only person 2 still qualifies, so its recomputed event gets
+    # a different event_id (seq 0 instead of 1) — but the same time span and
+    # person_id. The prior verdict must still show up.
+    await client.post(f"/api/runs/{two_person_moving_run_id}/hazard-marker", data={"x": "3500", "y": "140"})
+    r = await client.get(f"/api/runs/{two_person_moving_run_id}/events")
+    events_b = r.json()["events"]
+    assert len(events_b) == 1
+    person2_event_b = events_b[0]
+    assert person2_event_b["person_id"] == 2
+    assert person2_event_b["event_id"] != person2_event_a["event_id"]
+    assert person2_event_b["review"]["state"] == "confirmed"
+    assert person2_event_b["review"]["reviewer"] == "Anna"
+
+
+def test_carry_forward_mot_fara_reviews_keys_by_tracklet_not_person():
+    """When P3 didn't run, every MOT_FARA event's person_id is None. Grouping
+    verdict carry-forward by person_id would collapse two distinct tracklets'
+    reviewed events into the same bucket and risk attaching one tracklet's
+    verdict to the other's recomputed event. This reproduces that scenario
+    with two tracklets (both person_id=None) whose original verdicts are
+    closer in time to each other's *other* tracklet's recomputed event than
+    to their own, so a naive nearest-in-time-only match would misattribute."""
+    from review.routes import _carry_forward_mot_fara_reviews
+
+    original = [
+        {
+            "event_id": "mot_fara-000000",
+            "person_id": None,
+            "t_start": 10.0,
+            "t_end": 12.0,
+            "evidence": {"tracklet_id": 1},
+            "review": {"state": "confirmed", "reviewer": "Anna", "note": None},
+        },
+        {
+            "event_id": "mot_fara-000001",
+            "person_id": None,
+            "t_start": 4.5,
+            "t_end": 7.9,
+            "evidence": {"tracklet_id": 2},
+            "review": {"state": "rejected", "reviewer": "Bob", "note": None},
+        },
+    ]
+    recomputed = [
+        {
+            "event_id": "mot_fara-000000",
+            "person_id": None,
+            "t_start": 4.6,
+            "t_end": 7.8,
+            "evidence": {"tracklet_id": 1},
+            "review": {"state": "unreviewed"},
+        },
+        {
+            "event_id": "mot_fara-000001",
+            "person_id": None,
+            "t_start": 9.9,
+            "t_end": 12.1,
+            "evidence": {"tracklet_id": 2},
+            "review": {"state": "unreviewed"},
+        },
+    ]
+    result = _carry_forward_mot_fara_reviews(original, recomputed)
+    by_tid = {ev["evidence"]["tracklet_id"]: ev for ev in result}
+    assert by_tid[1]["review"]["state"] == "confirmed"
+    assert by_tid[1]["review"]["reviewer"] == "Anna"
+    assert by_tid[2]["review"]["state"] == "rejected"
+    assert by_tid[2]["review"]["reviewer"] == "Bob"
+
+
 async def test_review_invalid_state_422(settings, run_id, client):
     r = await client.post(f"/api/runs/{run_id}/events/stilla-000001/review", data={"state": "maybe"})
     assert r.status_code == 422

@@ -26,6 +26,7 @@
 const CATEGORY_LABEL = {
   STILLA: "STILLA",
   MOT_FARA: "MOT FARA",
+  IRRATIONELL: "IRRATIONELLT",
   HAZARD: "FARA",
 };
 
@@ -41,10 +42,19 @@ const COLORS = {
   ok: "#2ecc71",
   still: "#ff4757",
   toward_danger: "#ffa502",
+  irrationell: "#a55eea", // new in Phase 4 — distinct from the still/toward hues
   base: "#34c3ff",
   danger: "#ff4757",
   smoke: "#aab4be",
   fire: "#ff6b35",
+};
+
+// category -> color, for the timeline strip and active-event badges.
+const CATEGORY_COLOR = {
+  STILLA: COLORS.still,
+  MOT_FARA: COLORS.toward_danger,
+  IRRATIONELL: COLORS.irrationell,
+  HAZARD: COLORS.fire,
 };
 
 // ---------- app state ----------
@@ -62,6 +72,8 @@ const state = {
   activeEventId: null,
   layers: { boxes: true, ids: true, status: true, trails: false },
   _reviewPauseHandler: null, // current jumpToEvent auto-pause listener, if any
+  hazardMarker: { active: false, x: null, y: null }, // Phase 4 retroactive marker
+  hazardPlacementArmed: false, // true while waiting for the next canvas click
 };
 
 // ---------- DOM ----------
@@ -148,6 +160,7 @@ async function loadRun(rid) {
       overlayMsg.classList.add("hidden");
       syncCanvasSize();
     }, { once: true });
+    video.addEventListener("loadedmetadata", () => renderTimeline(), { once: true });
     video.addEventListener("error", () => {
       overlayMsg.textContent = "Kunde inte läsa in videon.";
       overlayMsg.classList.remove("hidden");
@@ -158,7 +171,13 @@ async function loadRun(rid) {
     overlayMsg.classList.remove("hidden");
   }
 
-  // 3. Events (optional — a run may have skipped P5).
+  // 3. Hazard marker state (Phase 4) before events — get_events already
+  // serves MOT_FARA recomputed against it when active, so this just
+  // syncs the button UI/legend to match what the event fetch below returns.
+  state.hazardPlacementArmed = false;
+  await refreshHazardMarker();
+
+  // 4. Events (optional — a run may have skipped P5).
   try {
     const evRes = await fetch(`/api/runs/${rid}/events`).then((r) => r.json());
     state.events = evRes.events || [];
@@ -172,7 +191,7 @@ async function loadRun(rid) {
   updateStats();
   refreshComparison();
 
-  // 4. PTS index — bridges media-time (seconds) ↔ frame_no. We pull a
+  // 5. PTS index — bridges media-time (seconds) ↔ frame_no. We pull a
   // window around the current playhead on demand rather than the whole
   // file: long films have tens of thousands of frames and the index is
   // only consulted for sync, not for rendering.
@@ -298,6 +317,7 @@ async function drawOverlay() {
   if (!video.readyState || video.readyState < 2) return;
   syncCanvasSize();
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  drawHazardMarker(canvas.width, canvas.height);
 
   await ensureFramesWindow(video.currentTime * 1000);
   const frameNo = currentFrameNo();
@@ -355,6 +375,9 @@ function statusFor(box, activeEvents) {
     if (ev.category === "MOT_FARA" && ev.person_id != null && ev.person_id === box.person_id) {
       return "toward_danger";
     }
+    if (ev.category === "IRRATIONELL" && ev.person_id != null && ev.person_id === box.person_id) {
+      return "irrationell";
+    }
   }
   return "ok";
 }
@@ -376,6 +399,7 @@ function drawPerson(b, W, H, activeEvents) {
   else if (state.layers.ids) label = `T${b.tracklet_id}`;
   if (state.layers.status && status === "still") label += `${label ? " · " : ""}STILLA`;
   if (state.layers.status && status === "toward_danger") label += `${label ? " · " : ""}MOT FARA`;
+  if (state.layers.status && status === "irrationell") label += `${label ? " · " : ""}IRRATIONELLT`;
   if (!label) return;
 
   ctx.font = `bold ${Math.max(11, W / 60)}px system-ui, sans-serif`;
@@ -429,17 +453,37 @@ function drawActiveBadges(events, W, H) {
   for (const ev of events) {
     const label = CATEGORY_LABEL[ev.category] || ev.category;
     const w = ctx.measureText(label).width + 16;
-    ctx.fillStyle = COLORS[
-      ev.category === "STILLA" ? "still"
-      : ev.category === "MOT_FARA" ? "toward_danger"
-      : "fire"
-    ];
+    ctx.fillStyle = CATEGORY_COLOR[ev.category] || COLORS.fire;
     ctx.fillRect(W - w - 8, y, w, 24);
     ctx.fillStyle = "#0c1014";
     ctx.fillText(label, W - 16, y + 5);
     y += 28;
   }
   ctx.textAlign = "left"; // reset
+}
+
+function drawHazardMarker(W, H) {
+  // The manually placed hazard marker (Phase 4, report §5.1) — same pixel
+  // space as tracklet boxes, drawn as a small pin so the reviewer always
+  // sees where MOT_FARA is currently being computed against.
+  if (!state.hazardMarker.active) return;
+  const { x, y } = state.hazardMarker;
+  const r = Math.max(6, W / 90);
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fillStyle = COLORS.toward_danger;
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = "#0c1014";
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(x, y - r);
+  ctx.lineTo(x, y - r - 14);
+  ctx.stroke();
+  ctx.font = `bold ${Math.max(11, W / 70)}px system-ui, sans-serif`;
+  ctx.textBaseline = "bottom";
+  ctx.fillStyle = COLORS.toward_danger;
+  ctx.fillText("FAROMARKÖR", x + r + 4, y + r);
 }
 
 // =====================================================================
@@ -464,7 +508,212 @@ document.querySelectorAll("#sidebar-tabs .tab").forEach((btn) => {
   btn.onclick = () => {
     document.querySelectorAll("#sidebar-tabs .tab").forEach((b) => b.classList.toggle("on", b === btn));
     document.querySelectorAll(".tab-pane").forEach((p) => p.classList.toggle("hidden", p.dataset.pane !== btn.dataset.tab));
+    if (btn.dataset.tab === "timeline") renderTimeline();
   };
+});
+
+// =====================================================================
+// Phase 4: timeline strip — per-person flag lanes, hazard/bookmark/operator
+// markers, click-to-seek. Turns a long film into the "5-second visual scan"
+// the report frames this feature around.
+// =====================================================================
+
+const TIMELINE_PX_PER_S = 8;
+const TIMELINE_LANE_H = 22;
+const TIMELINE_LANE_GAP = 6;
+const TIMELINE_LABEL_W = 96;
+
+function timelineDurationS() {
+  if (video.duration && isFinite(video.duration) && video.duration > 0) return video.duration;
+  let maxT = 0;
+  for (const e of state.events) maxT = Math.max(maxT, e.t_end || 0);
+  for (const b of state.bookmarks) maxT = Math.max(maxT, b.t || 0);
+  for (const n of state.operatorNotes) maxT = Math.max(maxT, n.t || 0);
+  return maxT + 5;
+}
+
+function renderTimeline() {
+  const svg = $("#timeline-svg");
+  const empty = $("#timeline-empty");
+  const hasContent = state.events.length || state.bookmarks.length || state.operatorNotes.length;
+  if (!state.runId || !hasContent) {
+    svg.classList.add("hidden");
+    empty.classList.remove("hidden");
+    empty.textContent = state.runId ? "Inget att visa på tidslinjen ännu." : "Ingen körning inläst.";
+    $("#timeline-legend").textContent = "";
+    return;
+  }
+  empty.classList.add("hidden");
+  svg.classList.remove("hidden");
+
+  // Group person-keyed flags by person_id; HAZARD (person_id=null) gets its
+  // own "Fara" lane instead of being lumped with "okänd person".
+  const byPerson = new Map();
+  const hazardRow = [];
+  for (const e of state.events) {
+    if (e.category === "HAZARD") { hazardRow.push(e); continue; }
+    const pid = e.person_id != null ? e.person_id : "okänd";
+    if (!byPerson.has(pid)) byPerson.set(pid, []);
+    byPerson.get(pid).push(e);
+  }
+  const personIds = [...byPerson.keys()].sort((a, b) => {
+    if (a === "okänd") return 1;
+    if (b === "okänd") return -1;
+    return a - b;
+  });
+
+  const rows = personIds.map((pid) => ({
+    label: pid === "okänd" ? "Okänd person" : `Person P${pid}`,
+    kind: "spans",
+    items: byPerson.get(pid),
+  }));
+  if (hazardRow.length) rows.push({ label: "Fara", kind: "spans", items: hazardRow });
+  if (state.bookmarks.length) rows.push({ label: "Bokmärken", kind: "points", items: state.bookmarks });
+  if (state.operatorNotes.length) {
+    rows.push({
+      label: "Operatör",
+      kind: "points",
+      items: state.operatorNotes.map((n) => ({ t: n.t, label: n.text })),
+    });
+  }
+
+  const duration = timelineDurationS();
+  const width = TIMELINE_LABEL_W + Math.max(200, duration * TIMELINE_PX_PER_S);
+  const height = rows.length * (TIMELINE_LANE_H + TIMELINE_LANE_GAP) + TIMELINE_LANE_GAP + 20;
+  svg.setAttribute("width", width);
+  svg.setAttribute("height", height);
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+
+  const parts = [];
+  for (let t = 0; t <= duration; t += 30) {
+    const x = TIMELINE_LABEL_W + t * TIMELINE_PX_PER_S;
+    parts.push(`<line x1="${x}" y1="0" x2="${x}" y2="${height}" class="tl-grid"></line>`);
+    parts.push(`<text x="${x + 3}" y="12" class="tl-axis">${fmtT(t)}</text>`);
+  }
+
+  rows.forEach((row, i) => {
+    const y = 20 + i * (TIMELINE_LANE_H + TIMELINE_LANE_GAP);
+    parts.push(`<text x="4" y="${y + TIMELINE_LANE_H / 2 + 4}" class="tl-label">${esc(row.label)}</text>`);
+    if (row.kind === "spans") {
+      for (const e of row.items) {
+        const x0 = TIMELINE_LABEL_W + e.t_start * TIMELINE_PX_PER_S;
+        const w = Math.max(2, (e.t_end - e.t_start) * TIMELINE_PX_PER_S);
+        const color = CATEGORY_COLOR[e.category] || COLORS.ok;
+        const label = CATEGORY_LABEL[e.category] || e.category;
+        const tip = `${label} · ${fmtT(e.t_start)}–${fmtT(e.t_end)} · v ${e.confidence.toFixed(2)}`;
+        parts.push(
+          `<rect x="${x0}" y="${y}" width="${w}" height="${TIMELINE_LANE_H}" rx="3" fill="${color}" ` +
+          `class="tl-span" data-seek="${e.t_start}"><title>${esc(tip)}</title></rect>`
+        );
+      }
+    } else {
+      for (const item of row.items) {
+        const x = TIMELINE_LABEL_W + item.t * TIMELINE_PX_PER_S;
+        const cy = y + TIMELINE_LANE_H / 2;
+        const tip = `${esc(item.label || "")} · ${fmtT(item.t)}`;
+        parts.push(
+          `<circle cx="${x}" cy="${cy}" r="5" class="tl-marker" data-seek="${item.t}"><title>${tip}</title></circle>`
+        );
+      }
+    }
+  });
+
+  svg.innerHTML = parts.join("");
+  svg.querySelectorAll("[data-seek]").forEach((el) => {
+    el.addEventListener("click", () => {
+      video.currentTime = Math.max(0, parseFloat(el.dataset.seek));
+    });
+  });
+
+  $("#timeline-legend").textContent = state.hazardMarker.active
+    ? `faromarkör placerad (${state.hazardMarker.x.toFixed(0)}, ${state.hazardMarker.y.toFixed(0)})`
+    : "";
+}
+
+// =====================================================================
+// Phase 4: retroactive hazard marker — place/move by clicking the video,
+// instant recompute of MOT_FARA (report §5.1)
+// =====================================================================
+
+async function refreshHazardMarker() {
+  if (!state.runId) return;
+  try {
+    const r = await fetch(`/api/runs/${state.runId}/hazard-marker`).then((res) => res.json());
+    state.hazardMarker = r.active ? { active: true, x: r.x, y: r.y } : { active: false, x: null, y: null };
+  } catch (_) {
+    state.hazardMarker = { active: false, x: null, y: null };
+  }
+  updateHazardMarkerButtons();
+}
+
+function updateHazardMarkerButtons() {
+  const btn = $("#btn-hazard-marker");
+  const clearBtn = $("#btn-hazard-clear");
+  btn.textContent = state.hazardPlacementArmed
+    ? "📍 Klicka i bilden …"
+    : state.hazardMarker.active
+      ? "📍 Flytta faromarkör"
+      : "📍 Faromarkör";
+  btn.classList.toggle("on", state.hazardPlacementArmed);
+  clearBtn.classList.toggle("hidden", !state.hazardMarker.active);
+}
+
+async function setHazardMarker(x, y) {
+  const r = await fetch(`/api/runs/${state.runId}/hazard-marker`, {
+    method: "POST",
+    body: new URLSearchParams({ x: String(x), y: String(y) }),
+  });
+  if (!r.ok) { toast("Kunde inte flytta faromarkören", "error"); return; }
+  const row = await r.json();
+  state.hazardMarker = { active: true, x: row.x, y: row.y };
+  updateHazardMarkerButtons();
+  toast("Faromarkör flyttad — MOT FARA omberäknad", "success");
+  await reloadEventsAfterHazardChange();
+}
+
+async function reloadEventsAfterHazardChange() {
+  // MOT_FARA is recomputed server-side at read time (review/hazard.py) — a
+  // plain re-fetch of the event log is all "instant recompute" requires,
+  // no batch job, no polling.
+  const evRes = await fetch(`/api/runs/${state.runId}/events`).then((r) => r.json());
+  state.events = evRes.events || [];
+  lastDrawnFrame = null; // force overlay redraw so MOT_FARA badges update now
+  renderEvents();
+  renderTimeline();
+}
+
+$("#btn-hazard-marker").onclick = () => {
+  if (!state.runId) return;
+  state.hazardPlacementArmed = !state.hazardPlacementArmed;
+  updateHazardMarkerButtons();
+  if (state.hazardPlacementArmed) toast("Klicka i bilden för att placera faromarkören", "info");
+};
+
+$("#btn-hazard-clear").onclick = async () => {
+  if (!state.runId) return;
+  const r = await fetch(`/api/runs/${state.runId}/hazard-marker`, { method: "DELETE" });
+  if (r.ok) {
+    state.hazardMarker = { active: false, x: null, y: null };
+    updateHazardMarkerButtons();
+    toast("Faromarkör borttagen — återgår till AI-detekterad fara", "success");
+    await reloadEventsAfterHazardChange();
+  } else {
+    toast("Kunde inte ta bort faromarkören", "error");
+  }
+};
+
+$("#stage").addEventListener("click", (e) => {
+  if (!state.hazardPlacementArmed || !state.runId) return;
+  if (video.readyState < 1 || !canvas.width || !canvas.height) return;
+  const rect = canvas.getBoundingClientRect();
+  const dispX = e.clientX - rect.left;
+  const dispY = e.clientY - rect.top;
+  if (dispX < 0 || dispY < 0 || dispX > rect.width || dispY > rect.height) return;
+  const x = (dispX / rect.width) * canvas.width;
+  const y = (dispY / rect.height) * canvas.height;
+  state.hazardPlacementArmed = false;
+  updateHazardMarkerButtons();
+  setHazardMarker(x, y);
 });
 
 // =====================================================================
@@ -489,6 +738,7 @@ function renderEvents() {
   }
   if (!state.events.length) {
     ul.innerHTML = '<li class="dim">Inga händelser.</li>';
+    renderTimeline();
     return;
   }
   ul.innerHTML = sortedEvents().map((ev) => {
@@ -498,7 +748,13 @@ function renderEvents() {
     const pid = ev.person_id != null ? `P${ev.person_id}` : "—";
     const dur = (ev.t_end - ev.t_start).toFixed(1);
     const meta = `<span class="meta">${fmtT(ev.t_start)} · ${dur}s · ${pid} · v ${ev.confidence.toFixed(2)}</span>`;
-    const note = ev.evidence && ev.evidence.kind ? `<span class="note">typ: ${ev.evidence.kind}</span>` : "";
+    // IRRATIONELL's evidence has no bare "kind" — it names which sub-signals
+    // fired (report §4: never a bare label). HAZARD keeps its fire/smoke tag.
+    const note = ev.evidence && ev.evidence.kind
+      ? `<span class="note">typ: ${ev.evidence.kind}</span>`
+      : ev.evidence && ev.evidence.summary
+        ? `<span class="note">${esc(ev.evidence.summary)}</span>`
+        : "";
     const badge = `<span class="review-badge">${REVIEW_STATE_LABEL[review.state] || "ogranskad"}</span>`;
     return `<li class="${cls} review-${esc(review.state)}" data-event-id="${esc(ev.event_id)}">
       <span class="label">${cat}</span>
@@ -543,6 +799,7 @@ function renderEvents() {
       form.classList.add("hidden");
     };
   });
+  renderTimeline();
 }
 
 async function setEventReview(eventId, fields) {
@@ -622,6 +879,7 @@ function renderBookmarks() {
   }
   if (!state.bookmarks.length) {
     ul.innerHTML = '<li class="dim">Inga bokmärken.</li>';
+    renderTimeline();
     return;
   }
   const sorted = [...state.bookmarks].sort((a, b) => a.t - b.t);
@@ -654,6 +912,7 @@ function renderBookmarks() {
       } else { toast("Kunde inte ta bort bokmärke", "error"); }
     };
   });
+  renderTimeline();
 }
 
 $("#btn-bookmark").onclick = () => {
@@ -814,6 +1073,7 @@ function renderOperatorNotes() {
   const ul = $("#operator-note-list");
   if (!state.operatorNotes.length) {
     ul.innerHTML = '<li class="dim">Inga anteckningar importerade.</li>';
+    renderTimeline();
     return;
   }
   const sorted = [...state.operatorNotes].sort((a, b) => a.t - b.t);
@@ -846,6 +1106,7 @@ function renderOperatorNotes() {
       }
     };
   });
+  renderTimeline();
 }
 
 $("#operator-import-form").onsubmit = async (e) => {

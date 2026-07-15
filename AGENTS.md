@@ -30,15 +30,17 @@ for the offline tool). Code-level citations are in the companion scout report.
 | `analysis/tracker.py` | P2: BoT-SORT + GMC, driven from P1's persisted detections |
 | `analysis/embedding.py` | P1 appearance embedder: OSNet primary + HSV fallback below the ReID floor |
 | `analysis/identity.py` | P3: global tracklet association into persons (constrained agglomerative clustering + `assoc_audit`) |
-| `analysis/events.py` | P5: behavior/situation status diffed into discrete events (STILLA/MOT_FARA/HAZARD) |
-| `review/` | Thin review UI + REST API over the artifact. **Never imports the engine** (interface rule 2: UI touches only the artifact + annotations). |
+| `analysis/events.py` | P5: behavior/situation/irrational status diffed into discrete events (STILLA/MOT_FARA/IRRATIONELL/HAZARD) |
+| `analysis/irrational.py` | Phase 4: IRRATIONELL sub-signal ensemble (erratic path, panic sprint, counter-flow, oscillation, freeze-and-bolt) over the same tracklet trajectories STILLA/MOT_FARA read |
+| `review/` | Thin review UI + REST API over the artifact. **Never imports the engine's heavy passes** (interface rule 2 — see the Phase 4 section below for the one deliberate exception: pure P5 derivation functions). |
 | `review/main.py` | FastAPI app, mounts static + routes |
-| `review/routes.py` | REST endpoints (runs, events, tracklets, persons, video, export, bookmarks, screenshots, event review, operator-notes import, comparison, debrief) |
-| `review/annotations.py` | Append-only annotation log — separate from AI tables (survives re-analysis). Kinds: bookmarks, screenshots (Phase 2), verdicts, operator_notes (Phase 3) |
+| `review/routes.py` | REST endpoints (runs, events, tracklets, persons, video, export, bookmarks, screenshots, event review, operator-notes import, comparison, debrief, hazard-marker) |
+| `review/annotations.py` | Append-only annotation log — separate from AI tables (survives re-analysis). Kinds: bookmarks, screenshots (Phase 2), verdicts, operator_notes (Phase 3), hazard_marker (Phase 4) |
 | `review/operator_notes.py` | Phase 3: forgiving parser for imported operator field notes → `(t, text)` rows |
 | `review/comparison.py` | Phase 3: time-proximity matching of AI events vs. operator notes → 3-bucket comparison |
 | `review/debrief.py` | Phase 3: renders the standalone HTML training-debrief report |
-| `review/static/` | HTML5 `<video>` + overlay canvas (single-page, no build step) |
+| `review/hazard.py` | Phase 4: retroactive MOT_FARA recompute against a reviewer-placed hazard marker, over already-persisted P2 tracklets |
+| `review/static/` | HTML5 `<video>` + overlay canvas + timeline strip (single-page, no build step) |
 
 The carved-out analyzer modules in `analysis/` are independent copies of their
 `app/vision/` originals. The realtime `app/vision/` modules are left untouched.
@@ -59,8 +61,8 @@ Sidecar store at `<output>/<run_id>/`:
 - `detections/<pass>.jsonl` — P1's raw per-detection output (never tracker-adjusted), with raw appearance embedding + `embedding_method` ("osnet"|"hsv")
 - `tracklets/<pass>.jsonl` — P2's per-(track_id, frame) tracker/Kalman-adjusted boxes, referencing back to `det_id`
 - `persons/<pass>.jsonl` — P3's per-identity records: `person_id, tracklet_ids, embedding_centroids, first/last_seen, confirmation_state, assoc_audit`
-- `events/<pass>.jsonl` — P5's per-event records: `event_id, category, person_id|null, t_start, t_end, confidence, evidence, review` (default unreviewed)
-- `annotations/{bookmarks,screenshots,verdicts,operator_notes}.jsonl` — human review layer. **Append-only log, separate from AI tables** — never mixed into events/, never overwritten by re-analysis. bookmarks/screenshots/operator_notes are entity-per-row with tombstone soft-delete; `verdicts` is keyed by `event_id` with latest-row-wins semantics instead (a verdict is a state-transition history, not a deletable entity) — see `review/annotations.py`'s module docstring and `AnnotationStore.all_verdicts`.
+- `events/<pass>.jsonl` — P5's per-event records: `event_id, category, person_id|null, t_start, t_end, confidence, evidence, review` (default unreviewed). Categories: STILLA, MOT_FARA, IRRATIONELL (Phase 4), HAZARD.
+- `annotations/{bookmarks,screenshots,verdicts,operator_notes,hazard_marker}.jsonl` — human review layer. **Append-only log, separate from AI tables** — never mixed into events/, never overwritten by re-analysis. bookmarks/screenshots/operator_notes are entity-per-row with tombstone soft-delete; `verdicts` and `hazard_marker` are latest-row-wins instead (a verdict is a state-transition history keyed by `event_id`; `hazard_marker` is a single evolving value with no key — only one exists per run) — see `review/annotations.py`'s module docstring, `AnnotationStore.all_verdicts`, `AnnotationStore.get_hazard_marker`.
 - `annotations/screenshots/<id>.png` — client-composited PNGs (browser does the compositing; the server never renders a frame — report §2.5 dual-renderer fix)
 - `checkpoints/<pass>/` — P1 resumable state only; P2/P3/P5 always re-run in full (cheap, deterministic given P1's output)
 
@@ -145,18 +147,19 @@ behavior/situation status via the carried-over analyzers) and P5 (status-
 stream diffing). The analyzers are stateless per-call, so there's no value
 in persisting per-frame status separately — derive events in one pass.
 
-Categories for Phase 2: `STILLA` (sustained no-motion), `MOT_FARA` (sustained
-motion toward the danger point), `HAZARD` (fire/smoke onset). `IRRATIONELL`
-is Phase 4 per the report's build order.
+Categories: `STILLA` (sustained no-motion), `MOT_FARA` (sustained motion
+toward the danger point), `IRRATIONELL` (Phase 4 sub-signal ensemble, see
+below), `HAZARD` (fire/smoke onset).
 
-- **Person-keyed categories** (`STILLA`/`MOT_FARA`) carry `person_id` when
-  P3 ran, null otherwise. `HAZARD` is always `person_id=null` (a fire is
-  not a person).
+- **Person-keyed categories** (`STILLA`/`MOT_FARA`/`IRRATIONELL`) carry
+  `person_id` when P3 ran, null otherwise. `HAZARD` is always
+  `person_id=null` (a fire is not a person).
 - **Danger point.** The live system's MOT_FARA needs an operator-marked
   danger point. Offline, P5 uses the SituationAnalyzer's detected fire/smoke
-  position (time-weighted mean across the film) as the danger point.
-  Retroactive operator-marked queries are Phase 4. When no hazard ever
-  fires, MOT_FARA cannot be derived; STILLA can.
+  position (time-weighted mean across the film) as the danger point. When no
+  hazard ever fires, MOT_FARA cannot be derived; STILLA can. Phase 4 adds a
+  reviewer-driven override on top of this engine-computed default — see
+  below.
 - **Determinism.** P5 drives the analyzers in fixed (frame_no, tracklet_id)
   order with no RNG — two runs over the same P1+P2(+P3) output produce
   byte-identical events, mirroring the P1/P2/P3 guarantee.
@@ -165,6 +168,56 @@ is Phase 4 per the report's build order.
   by construction after `min_history_s` + `still_time_s` of sustained
   stillness. The event itself spans only the confidently-flagged span, not
   the underlying physical stillness (which started earlier).
+
+### IRRATIONELL behavior + retroactive hazard + timeline (Phase 4)
+
+`analysis/irrational.py` derives IRRATIONELL from the same tracklet
+trajectories STILLA/MOT_FARA already read — no new coordinate convention,
+same foot-center/body-height substrate. Five sub-signals (erratic path,
+panic sprint, counter-flow, oscillation, freeze-and-bolt), each a pure
+function with its own threshold set (`IrrationalConfig`, translated from
+`OfflineConfig`'s `irr_*` fields), combined into a weighted score gated by a
+sustained-duration requirement — the same `since`-timestamp hysteresis idiom
+as `BehaviorAnalyzer`. Full sub-signal formulas, the two thresholds the
+architecture report itself left unspecified (and why), and the STILLA-wins
+precedence rule's implementation are documented in the module's docstring
+and DECISIONS.md B26 — read those before touching the thresholds.
+
+**Evidence, never a bare label.** Every IRRATIONELL event's
+`evidence.sub_signals` names exactly which sub-signals fired and their
+measured values, plus a formatted `evidence.summary` string — the same
+discipline as P3's `assoc_audit`. The review UI (`review/static/app.js`)
+surfaces `evidence.summary` in the event list and the timeline's span
+tooltips; never renders a bare "IRRATIONELLT" with no explanation.
+
+**Retroactive hazard marker (`review/hazard.py`, report §5.1).** The
+reviewer places/moves a hazard marker in the review UI; `recompute_mot_fara`
+reruns `analysis.events.derive_behavior_events` over P2's already-persisted
+tracklets with the new danger point — no P1-P3 re-run. This is the one
+place `review/` calls into `analysis/`'s derivation functions, which reads
+as tension with interface rule 2 ("UI never imports the engine") until you
+separate "the engine" (P1/P2/P3's heavy, stateful, model-driven passes) from
+"a pure function over an already-persisted artifact" (what `derive_behavior_events`
+is). The latter is exactly the "query over the artifact" the report's own
+scope-discipline note (§6) calls cheap — and its own headline example of the
+capability (§5.1). Duplicating the behavior math in `review/` instead would
+have violated a more concrete instruction (reuse the same substrate
+STILLA/MOT_FARA use). The recomputed MOT_FARA never touches
+`events/<pass>.jsonl`; `review/routes.py:_apply_hazard_override` merges it
+in at read time, exactly like Phase 3's verdict overlay. Moving the marker
+best-effort carries forward any existing Phase 3 verdict from the original
+MOT_FARA event onto its recomputed replacement
+(`_carry_forward_mot_fara_reviews`, keyed by `evidence.tracklet_id` — not
+`person_id`, which is null on every MOT_FARA event whenever P3 didn't run
+and would collapse distinct people into one bucket), matched by
+overlapping/closest time span since MOT_FARA event ids and spans are not
+stable across marker positions. Full reasoning: DECISIONS.md B26.
+
+**Timeline strip (`review/static/app.js:renderTimeline`).** A sidebar tab
+rendering an SVG strip — one lane per person (STILLA/MOT_FARA/IRRATIONELL
+spans), one for HAZARD, one for bookmarks, one for operator notes. Click any
+span/marker to seek. Pure client-side render over data already fetched for
+the event list; no new endpoint beyond the existing `/events`.
 
 ### Identity design (Phase 1, P3)
 

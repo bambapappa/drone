@@ -252,10 +252,19 @@ class TestBulk:
         store.add_screenshot(t=2.0, label="s1")
         store.add_operator_note(t=3.0, text="n1")
         payload = store.all_annotations()
-        assert set(payload.keys()) == {"bookmarks", "screenshots", "operator_notes"}
+        # Phase 5 added identity_corrections + ground_truth as entity kinds.
+        assert set(payload.keys()) == {
+            "bookmarks",
+            "screenshots",
+            "operator_notes",
+            "identity_corrections",
+            "ground_truth",
+        }
         assert len(payload["bookmarks"]) == 1
         assert len(payload["screenshots"]) == 1
         assert len(payload["operator_notes"]) == 1
+        assert payload["identity_corrections"] == []
+        assert payload["ground_truth"] == []
 
     def test_export_payload_returns_live_entries(self, store: AnnotationStore):
         a = store.add_bookmark(t=1.0, label="b1")

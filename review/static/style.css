@@ -375,6 +375,52 @@ button.primary { background: var(--chip-on); border-color: var(--accent); color:
 button:hover { border-color: var(--accent); }
 button.small { padding: 4px 8px; font-size: 12px; }
 
+/* ---- Phase 5 ---- */
+
+#guide-link {
+  color: var(--dim);
+  text-decoration: none;
+  font-size: 12px;
+  border: 1px solid #2a3540;
+  border-radius: 8px;
+  padding: 6px 10px;
+  white-space: nowrap;
+}
+#guide-link:hover { color: var(--fg); border-color: var(--accent); }
+
+/* Eight tabs no longer fit one row — let the bar wrap. */
+#sidebar-tabs { flex-wrap: wrap; }
+#sidebar-tabs .tab { flex: 1 1 25%; min-width: 72px; }
+
+.card h4 {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--dim);
+  margin: 12px 0 6px;
+}
+.small-note { font-size: 12px; line-height: 1.4; margin-bottom: 8px; }
+.small-note code {
+  background: var(--chip); padding: 1px 4px; border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
+}
+
+.review-actions .btn-clip:hover { color: var(--warn); border-color: var(--warn); }
+
+/* Person dossier */
+.pd-meta { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--dim); }
+.pd-crops { display: flex; gap: 6px; overflow-x: auto; padding: 4px 0; min-height: 40px; }
+.pd-crop { flex: 0 0 auto; text-align: center; cursor: pointer; }
+.pd-crop canvas { border: 1px solid #2a3540; border-radius: 4px; display: block; }
+.pd-crop small { color: var(--dim); font-size: 10px; }
+.pd-traj-svg { width: 100%; max-height: 180px; background: #000; border: 1px solid #2a3540; border-radius: 6px; }
+.pd-traj-frame { fill: none; stroke: #2a3540; }
+.pd-traj-line { fill: none; stroke: var(--accent); stroke-width: 3; opacity: .85; }
+.pd-traj-start { fill: var(--ok); }
+.pd-traj-end { fill: var(--danger); }
+.pd-split-choice { display: inline-flex; align-items: center; gap: 4px; margin-right: 10px; font-size: 12px; }
+.card li .note.warn { color: var(--warn); }
+
 #toast {
   position: fixed;
   bottom: 20px; left: 50%; transform: translateX(-50%);

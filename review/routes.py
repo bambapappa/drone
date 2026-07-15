@@ -41,6 +41,33 @@ Three groups of endpoints, mirroring the architecture report's interface rule
     best-effort carried forward onto the recomputed ones
     (_carry_forward_mot_fara_reviews), keyed by tracklet_id + time proximity.
 
+  Phase 5 (report §5.5-5.9 — each surface behind its own feature toggle,
+  see review/config.py; a disabled feature's endpoints answer 404):
+    GET    /api/features                            — toggle state for the UI
+    GET    /api/runs/{rid}/identity-corrections     — ops + projection status (NOT gated: recorded
+                                                      human work stays visible even when the
+                                                      dossier toggle is off)
+    POST   /api/runs/{rid}/identity-corrections     — record a merge/split op   [FEATURE_DOSSIER]
+    DELETE /api/runs/{rid}/identity-corrections/{aid} — undo (tombstone) an op  [FEATURE_DOSSIER]
+    GET    /api/runs/{rid}/persons/{pid}/trajectory — downsampled dossier path  [FEATURE_DOSSIER]
+    POST   /api/runs/{rid}/ground-truth/import      — import reference truth    [FEATURE_GROUND_TRUTH]
+    GET    /api/runs/{rid}/ground-truth             — list reference entries    [FEATURE_GROUND_TRUTH]
+    DELETE /api/runs/{rid}/ground-truth/{aid}       — tombstone one entry       [FEATURE_GROUND_TRUTH]
+    GET    /api/runs/{rid}/ground-truth/score       — score AI + operator       [FEATURE_GROUND_TRUTH]
+    GET    /api/runs/{rid}/compare/{other_rid}      — multi-config run diff     [FEATURE_RUN_COMPARE]
+    GET    /api/runs/{rid}/heatmap                  — dwell grid                [FEATURE_HEATMAP]
+    (FEATURE_CLIP_EXPORT is fully client-side — the toggle only shows/hides
+    the UI controls via /api/features; there is no server endpoint because
+    the clip is recorded from the existing composite canvas in the browser,
+    keeping the single-annotated-renderer rule from report §2.5.)
+
+    Identity corrections never rewrite persons/<pass>.jsonl: the live ops are
+    REPLAYED over the engine's persons at read time
+    (review/identity_corrections.py), and the corrected tracklet→person
+    mapping flows into /persons, the /tracklets overlay join, served events'
+    person_id, and the heatmap's person filter — the same read-time-overlay
+    pattern as verdicts (Phase 3) and the hazard marker (Phase 4).
+
 Path traversal guards: run_id and annotation_id are validated strictly
 (alphanumeric + dash/underscore) before touching the filesystem — the
 review API serves files from a configured directory and a malicious path
@@ -67,8 +94,12 @@ from review.annotations import AnnotationStore
 from review.comparison import DEFAULT_TOLERANCE_S, compare_events_to_notes
 from review.config import ReviewSettings, get_settings
 from review.debrief import render_debrief_html
+from review.ground_truth import score_ground_truth
 from review.hazard import recompute_mot_fara
+from review.heatmap import DEFAULT_GRID_W, compute_heatmap
+from review.identity_corrections import ProjectionResult, apply_corrections, merge_overlap_warning
 from review.operator_notes import parse_operator_notes
+from review.run_compare import DEFAULT_RUN_TOLERANCE_S, RunCompareError, compare_runs
 
 router = APIRouter(prefix="/api")
 
@@ -123,17 +154,73 @@ def _merge_verdict(event: dict[str, Any], verdict: dict[str, Any] | None) -> dic
     return event
 
 
-def _person_by_tracklet(store: ArtifactStore) -> dict[int, int]:
-    """tracklet_id -> person_id, from P3 (empty if P3 didn't run). Shared by
-    the tracklet overlay endpoint and the hazard-marker recompute path so
-    the two never drift on how person_id is joined."""
-    person_by_tracklet: dict[int, int] = {}
+def _engine_persons(store: ArtifactStore) -> list[dict[str, Any]]:
+    """P3's persisted persons, or [] when P3 didn't run/complete."""
     p3 = OfflineOrchestrator.P3_PASS_NAME
-    if store.manifest.get("passes", {}).get(p3, {}).get("status") == "complete":
-        for p in store.iter_persons(p3):
-            for tid in p.get("tracklet_ids", []):
-                person_by_tracklet[int(tid)] = int(p["person_id"])
+    if store.manifest.get("passes", {}).get(p3, {}).get("status") != "complete":
+        return []
+    return list(store.iter_persons(p3))
+
+
+def _tracklet_spans(store: ArtifactStore) -> dict[int, tuple[int, int]]:
+    """tracklet_id -> (first_frame, last_frame) from P2. One O(rows) scan —
+    only needed when identity corrections exist (split spans + merge
+    warnings), so the common no-corrections path never pays for it."""
+    spans: dict[int, tuple[int, int]] = {}
+    for r in store.iter_tracklets(OfflineOrchestrator.P2_PASS_NAME):
+        tid = int(r.get("tracklet_id", -1))
+        fno = int(r.get("frame_no", -1))
+        cur = spans.get(tid)
+        spans[tid] = (fno, fno) if cur is None else (min(cur[0], fno), max(cur[1], fno))
+    return spans
+
+
+def _corrected_projection(store: ArtifactStore, ann: AnnotationStore) -> ProjectionResult:
+    """The persons table as served to every reader: engine output with live
+    identity-correction ops replayed on top (Phase 5, report §3.3-4).
+
+    Deliberately NOT gated on FEATURE_DOSSIER: the toggle controls the
+    dossier UI and new correction writes, but corrections already recorded
+    are human review work and keep applying — a config flag must never
+    silently un-correct identities (see review/config.py's docstring).
+    """
+    persons = _engine_persons(store)
+    ops = ann.list_identity_corrections()
+    spans = _tracklet_spans(store) if ops else None
+    return apply_corrections(persons, ops, fps=_run_fps(store), tracklet_spans=spans)
+
+
+def _person_by_tracklet(store: ArtifactStore, ann: AnnotationStore | None = None) -> dict[int, int]:
+    """tracklet_id -> person_id (identity corrections applied when `ann` is
+    given). Shared by the tracklet overlay endpoint, the hazard-marker
+    recompute path, and the heatmap so they never drift on how person_id is
+    joined."""
+    if ann is not None:
+        return _corrected_projection(store, ann).person_by_tracklet
+    person_by_tracklet: dict[int, int] = {}
+    for p in _engine_persons(store):
+        for tid in p.get("tracklet_ids", []):
+            person_by_tracklet[int(tid)] = int(p["person_id"])
     return person_by_tracklet
+
+
+def _remap_event_persons(events: list[dict[str, Any]], corrected_map: dict[int, int]) -> list[dict[str, Any]]:
+    """Re-key served events' person_id through the corrected tracklet→person
+    mapping. Engine events recorded person_id at P5 time from P3's original
+    clustering; when the reviewer has since split/merged persons, the event
+    must follow its tracklet to the corrected identity (evidence.tracklet_id
+    is the stable join key — the same reason Phase 4's verdict carry-forward
+    keys on it). Events without a tracklet (HAZARD) pass through untouched."""
+    out = []
+    for ev in events:
+        tid = (ev.get("evidence") or {}).get("tracklet_id")
+        if tid is not None and int(tid) in corrected_map and ev.get("person_id") is not None:
+            new_pid = corrected_map[int(tid)]
+            if new_pid != ev.get("person_id"):
+                ev = dict(ev)
+                ev["person_id"] = new_pid
+        out.append(ev)
+    return out
 
 
 def _run_fps(store: ArtifactStore) -> float:
@@ -189,7 +276,10 @@ def _carry_forward_mot_fara_reviews(
 
 
 def _apply_hazard_override(
-    events: list[dict[str, Any]], store: ArtifactStore, ann: AnnotationStore
+    events: list[dict[str, Any]],
+    store: ArtifactStore,
+    ann: AnnotationStore,
+    person_by_tracklet: dict[int, int],
 ) -> list[dict[str, Any]]:
     """Overlay a retroactive hazard-marker recompute onto the engine's
     MOT_FARA events, if the reviewer has placed a marker (Phase 4, report
@@ -206,7 +296,7 @@ def _apply_hazard_override(
         return events
     recomputed = recompute_mot_fara(
         store,
-        person_by_tracklet=_person_by_tracklet(store),
+        person_by_tracklet=person_by_tracklet,
         fps=_run_fps(store),
         hazard_x=marker["x"],
         hazard_y=marker["y"],
@@ -311,7 +401,14 @@ def _merged_events(settings: ReviewSettings, run_id: str) -> tuple[ArtifactStore
     ann = _annotation_store(settings, run_id)
     verdicts = ann.all_verdicts()
     events = [_merge_verdict(ev, verdicts.get(ev["event_id"])) for ev in store.iter_events(p5)]
-    events = _apply_hazard_override(events, store, ann)
+    # One projection serves both the hazard recompute's person join and the
+    # Phase 5 person remap below.
+    projection = _corrected_projection(store, ann)
+    events = _apply_hazard_override(events, store, ann, projection.person_by_tracklet)
+    # Phase 5: follow each event's tracklet to its corrected person identity
+    # when split/merge corrections exist (no-op otherwise).
+    if projection.changed:
+        events = _remap_event_persons(events, projection.person_by_tracklet)
     return store, events
 
 
@@ -385,9 +482,10 @@ async def get_tracklets(
     if store.manifest.get("passes", {}).get(p2, {}).get("status") != "complete":
         raise HTTPException(status_code=409, detail="P2 har inte körts för den här körningen")
     rows = [r for r in store.iter_tracklets(p2) if int(r.get("frame_no", -1)) == frame]
-    # Join tracklet → person_id from P3 (if available) so the overlay can
-    # show the stable person label rather than the internal tracklet id.
-    person_by_tracklet = _person_by_tracklet(store)
+    # Join tracklet → person_id from P3 (if available), with any identity
+    # corrections applied, so the overlay shows the same corrected person
+    # labels as the rest of the UI.
+    person_by_tracklet = _person_by_tracklet(store, _annotation_store(settings, run_id))
     for r in rows:
         tid = int(r.get("tracklet_id", -1))
         r["person_id"] = person_by_tracklet.get(tid)
@@ -422,12 +520,22 @@ async def get_tracklets_range(
 
 @router.get("/runs/{run_id}/persons")
 async def get_persons(run_id: str, settings: ReviewSettings = Depends(get_settings)) -> dict[str, Any]:
+    """P3's persons with live identity corrections replayed on top (Phase 5).
+    Corrected records carry `corrected: true` + `confirmation_state:
+    "manual"` so a consumer can always tell human-corrected identities from
+    engine output; ops that no longer resolve are reported in `skipped`
+    rather than silently dropped."""
     store = _open_store(settings, run_id)
     p3 = OfflineOrchestrator.P3_PASS_NAME
     if store.manifest.get("passes", {}).get(p3, {}).get("status") != "complete":
         raise HTTPException(status_code=409, detail="P3 har inte körts")
-    persons = list(store.iter_persons(p3))
-    return {"persons": persons, "count": len(persons)}
+    projection = _corrected_projection(store, _annotation_store(settings, run_id))
+    return {
+        "persons": projection.persons,
+        "count": len(projection.persons),
+        "corrections_applied": len(projection.applied),
+        "corrections_skipped": projection.skipped,
+    }
 
 
 @router.get("/runs/{run_id}/frames/meta")
@@ -756,3 +864,300 @@ async def delete_hazard_marker(
     time-weighted-mean danger point on the next read."""
     _annotation_store(settings, run_id).clear_hazard_marker()
     return {"active": False}
+
+
+# ---- Phase 5: feature toggles ----
+
+
+def _require_feature(settings: ReviewSettings, attr: str, env_name: str) -> None:
+    """Gate a Phase 5 endpoint on its toggle. 404 (not 403): a disabled
+    feature should look absent, and the detail names the env var so an
+    operator immediately knows which switch to flip."""
+    if not getattr(settings, attr):
+        raise HTTPException(status_code=404, detail=f"funktionen är avstängd ({env_name}=0)")
+
+
+@router.get("/features")
+async def get_features(settings: ReviewSettings = Depends(get_settings)) -> dict[str, bool]:
+    """Phase 5 toggle state — the UI hides tabs/buttons for disabled features."""
+    return settings.features_payload()
+
+
+# ---- Phase 5: identity corrections (dossier split/merge) ----
+
+
+@router.get("/runs/{run_id}/identity-corrections")
+async def get_identity_corrections(
+    run_id: str, settings: ReviewSettings = Depends(get_settings)
+) -> dict[str, Any]:
+    """Live correction ops + how the current projection treated them.
+
+    Deliberately NOT gated on FEATURE_DOSSIER: recorded corrections keep
+    applying to read-time projections when the toggle is off (see
+    review/config.py), so their existence must stay inspectable — a config
+    flag never hides recorded human work."""
+    store = _open_store(settings, run_id)
+    ann = _annotation_store(settings, run_id)
+    projection = _corrected_projection(store, ann)
+    return {
+        "corrections": ann.list_identity_corrections(),
+        "applied": projection.applied,
+        "skipped": projection.skipped,
+    }
+
+
+@router.post("/runs/{run_id}/identity-corrections", status_code=201)
+async def add_identity_correction(
+    run_id: str,
+    op: str = Form(..., max_length=10),
+    person_ids: str | None = Form(None, max_length=1000, description="merge: kommaseparerade person-id"),
+    person_id: int | None = Form(None, ge=0),
+    tracklet_ids: str | None = Form(None, max_length=4000, description="split: kommaseparerade tracklet-id"),
+    reason: str | None = Form(None, max_length=4000),
+    settings: ReviewSettings = Depends(get_settings),
+) -> dict[str, Any]:
+    """Record one manual split/merge correction (Phase 5, report §3.3-4).
+
+    Validated by DRY-RUNNING the op on top of the current projection (engine
+    persons + every earlier live op): an op that wouldn't apply is rejected
+    with the projection's own skip reason instead of being persisted as a
+    dead row. A merge of persons visible simultaneously is allowed — the
+    human may know better than P3's hard gate (e.g. tracker twin boxes) —
+    but answers with a warning naming the contradiction.
+    """
+    _require_feature(settings, "feature_dossier", "FEATURE_DOSSIER")
+    store = _open_store(settings, run_id)
+    p3 = OfflineOrchestrator.P3_PASS_NAME
+    if store.manifest.get("passes", {}).get(p3, {}).get("status") != "complete":
+        raise HTTPException(status_code=409, detail="P3 har inte körts — inga personer att korrigera")
+
+    def parse_ids(raw: str | None) -> list[int]:
+        try:
+            return [int(x) for x in (raw or "").replace(";", ",").split(",") if x.strip()]
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"ogiltig id-lista: {raw!r}") from exc
+
+    if op not in ("merge", "split"):
+        raise HTTPException(status_code=422, detail=f"okänd operation: {op!r}")
+    candidate: dict[str, Any] = {"annotation_id": "__candidate__", "op": op, "reason": reason}
+    if op == "merge":
+        candidate["person_ids"] = parse_ids(person_ids)
+    else:
+        candidate["person_id"] = person_id
+        candidate["tracklet_ids"] = parse_ids(tracklet_ids)
+
+    ann = _annotation_store(settings, run_id)
+    ops = ann.list_identity_corrections()
+    spans = _tracklet_spans(store)
+    dry = apply_corrections(
+        _engine_persons(store), ops + [candidate], fps=_run_fps(store), tracklet_spans=spans
+    )
+    rejected = next((s for s in dry.skipped if s["annotation_id"] == "__candidate__"), None)
+    if rejected is not None:
+        raise HTTPException(status_code=422, detail=rejected["reason"])
+
+    warning = None
+    if op == "merge":
+        # Warn against the pre-candidate projection — that's the state the
+        # merge actually acts on.
+        before = apply_corrections(_engine_persons(store), ops, fps=_run_fps(store), tracklet_spans=spans)
+        warning = merge_overlap_warning(
+            {p["person_id"]: p for p in before.persons}, candidate["person_ids"], spans
+        )
+
+    row = ann.add_identity_correction(
+        op=op,
+        person_ids=candidate.get("person_ids"),
+        person_id=candidate.get("person_id"),
+        tracklet_ids=candidate.get("tracklet_ids"),
+        reason=reason,
+    )
+    return {"correction": row, "warning": warning}
+
+
+@router.delete("/runs/{run_id}/identity-corrections/{aid}", status_code=200)
+async def delete_identity_correction(
+    run_id: str, aid: str, settings: ReviewSettings = Depends(get_settings)
+) -> dict[str, Any]:
+    """Undo a correction (tombstone). Later ops that depended on it are
+    skipped by the projection and reported via GET, never guessed at."""
+    _require_feature(settings, "feature_dossier", "FEATURE_DOSSIER")
+    _validate_id(aid, label="annotation_id")
+    ok = _annotation_store(settings, run_id).delete_identity_correction(aid)
+    if not ok:
+        raise HTTPException(status_code=404, detail="korrigeringen finns inte")
+    return {"deleted": aid}
+
+
+@router.get("/runs/{run_id}/persons/{person_id}/trajectory")
+async def get_person_trajectory(
+    run_id: str,
+    person_id: int,
+    max_points: int = Query(1500, ge=10, le=10000),
+    settings: ReviewSettings = Depends(get_settings),
+) -> dict[str, Any]:
+    """Downsampled foot-center path for one (corrected) person — the
+    dossier's trajectory plot. Raw frame pixels, same coordinate space and
+    caveat as the heatmap (stabilization offsets are not persisted; see
+    review/heatmap.py). Stride-downsampled so a film-long track stays a
+    bounded payload."""
+    _require_feature(settings, "feature_dossier", "FEATURE_DOSSIER")
+    store = _open_store(settings, run_id)
+    p2 = OfflineOrchestrator.P2_PASS_NAME
+    if store.manifest.get("passes", {}).get(p2, {}).get("status") != "complete":
+        raise HTTPException(status_code=409, detail="P2 har inte körts")
+    projection = _corrected_projection(store, _annotation_store(settings, run_id))
+    rec = next((p for p in projection.persons if int(p["person_id"]) == person_id), None)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="okänd person")
+    tids = {int(t) for t in rec.get("tracklet_ids", [])}
+    fps = _run_fps(store)
+    pts = []
+    for r in store.iter_tracklets(p2):
+        if int(r.get("tracklet_id", -1)) not in tids:
+            continue
+        x0, y0, x1, y1 = (float(v) for v in r["xyxy"])
+        fno = int(r["frame_no"])
+        pts.append(
+            {
+                "frame_no": fno,
+                "t": round(fno / fps, 3),
+                "x": round((x0 + x1) / 2.0, 1),
+                "y": round(y1, 1),
+                "tracklet_id": int(r["tracklet_id"]),
+            }
+        )
+    pts.sort(key=lambda p: (p["frame_no"], p["tracklet_id"]))
+    n_total = len(pts)
+    stride = max(1, -(-n_total // max_points))  # ceil division
+    return {"person_id": person_id, "n_total": n_total, "stride": stride, "points": pts[::stride]}
+
+
+# ---- Phase 5: ground truth ("facit") ----
+
+
+@router.post("/runs/{run_id}/ground-truth/import", status_code=201)
+async def import_ground_truth(
+    run_id: str,
+    text: str = Form(..., min_length=1, max_length=200_000),
+    settings: ReviewSettings = Depends(get_settings),
+) -> dict[str, Any]:
+    """Parse and store the exercise leader's reference truth. Same forgiving
+    timed-line format as operator notes (one parser, one syntax to learn —
+    see review/ground_truth.py); unparseable lines become warnings."""
+    _require_feature(settings, "feature_ground_truth", "FEATURE_GROUND_TRUTH")
+    _resolve_run(settings, run_id)
+    result = parse_operator_notes(text)
+    ann = _annotation_store(settings, run_id)
+    imported = [ann.add_ground_truth(t=n.t, text=n.text, raw_line=n.raw_line) for n in result.notes]
+    return {
+        "imported": imported,
+        "warnings": [
+            {"line": w.line_no, "raw_line": w.raw_line, "reason": w.reason} for w in result.warnings
+        ],
+    }
+
+
+@router.get("/runs/{run_id}/ground-truth")
+async def get_ground_truth(run_id: str, settings: ReviewSettings = Depends(get_settings)) -> dict[str, Any]:
+    _require_feature(settings, "feature_ground_truth", "FEATURE_GROUND_TRUTH")
+    rows = _annotation_store(settings, run_id).list_ground_truth()
+    return {"entries": rows, "count": len(rows)}
+
+
+@router.delete("/runs/{run_id}/ground-truth/{aid}", status_code=200)
+async def delete_ground_truth(
+    run_id: str, aid: str, settings: ReviewSettings = Depends(get_settings)
+) -> dict[str, Any]:
+    _require_feature(settings, "feature_ground_truth", "FEATURE_GROUND_TRUTH")
+    _validate_id(aid, label="annotation_id")
+    ok = _annotation_store(settings, run_id).delete_ground_truth(aid)
+    if not ok:
+        raise HTTPException(status_code=404, detail="facitposten finns inte")
+    return {"deleted": aid}
+
+
+@router.get("/runs/{run_id}/ground-truth/score")
+async def get_ground_truth_score(
+    run_id: str,
+    tolerance_s: float = Query(DEFAULT_TOLERANCE_S, ge=0),
+    settings: ReviewSettings = Depends(get_settings),
+) -> dict[str, Any]:
+    """Score BOTH the AI's events and the operator's notes against the
+    reference truth (report §5.6). Recomputed fresh on every call from live
+    data (like /comparison) — reproducible by construction. Events include
+    the verdict/hazard/correction overlays, so the score reflects what the
+    reviewer actually sees."""
+    _require_feature(settings, "feature_ground_truth", "FEATURE_GROUND_TRUTH")
+    _, events = _merged_events(settings, run_id)
+    ann = _annotation_store(settings, run_id)
+    score = score_ground_truth(
+        ann.list_ground_truth(), events, ann.list_operator_notes(), tolerance_s=tolerance_s
+    )
+    return {
+        "tolerance_s": score.tolerance_s,
+        "counts": score.counts,
+        "entries": score.entries,
+        "ai_unmatched": score.ai_unmatched,
+        "operator_unmatched": score.operator_unmatched,
+    }
+
+
+# ---- Phase 5: multi-config run comparison ----
+
+
+@router.get("/runs/{run_id}/compare/{other_run_id}")
+async def get_run_comparison(
+    run_id: str,
+    other_run_id: str,
+    tolerance_s: float = Query(DEFAULT_RUN_TOLERANCE_S, ge=0),
+    settings: ReviewSettings = Depends(get_settings),
+) -> dict[str, Any]:
+    """Diff two completed runs of the same video (report §5.7). The diff is
+    cheap; producing the runs is the expensive batch part and always happens
+    via the analyze CLI, never from here — see review/run_compare.py."""
+    _require_feature(settings, "feature_run_compare", "FEATURE_RUN_COMPARE")
+    store_a = _open_store(settings, run_id)
+    store_b = _open_store(settings, other_run_id)
+    try:
+        return compare_runs(store_a, store_b, tolerance_s=tolerance_s)
+    except RunCompareError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+# ---- Phase 5: dwell/coverage heatmap ----
+
+
+@router.get("/runs/{run_id}/heatmap")
+async def get_heatmap(
+    run_id: str,
+    person_id: int | None = Query(None, ge=0),
+    grid: int = Query(DEFAULT_GRID_W, ge=8, le=160),
+    settings: ReviewSettings = Depends(get_settings),
+) -> dict[str, Any]:
+    """Dwell grid over P2's tracklets (report §5.9), optionally filtered to
+    one (corrected) person for the dossier. Frame dims come from P1's pass
+    meta; older sidecars lack them and fall back to the tracklet boxes'
+    extent (slightly tight, harmless for a density overlay)."""
+    _require_feature(settings, "feature_heatmap", "FEATURE_HEATMAP")
+    store = _open_store(settings, run_id)
+    p2 = OfflineOrchestrator.P2_PASS_NAME
+    if store.manifest.get("passes", {}).get(p2, {}).get("status") != "complete":
+        raise HTTPException(status_code=409, detail="P2 har inte körts")
+    p1_meta = store.manifest.get("passes", {}).get(OfflineOrchestrator.P1_PASS_NAME, {}).get("meta", {})
+    rows = list(store.iter_tracklets(p2))
+    frame_w = int(p1_meta.get("width") or 0)
+    frame_h = int(p1_meta.get("height") or 0)
+    if frame_w <= 0 or frame_h <= 0:
+        frame_w = int(max((float(r["xyxy"][2]) for r in rows), default=0.0)) + 1
+        frame_h = int(max((float(r["xyxy"][3]) for r in rows), default=0.0)) + 1
+    pmap = _person_by_tracklet(store, _annotation_store(settings, run_id)) if person_id is not None else None
+    return compute_heatmap(
+        rows,
+        fps=_run_fps(store),
+        frame_w=frame_w,
+        frame_h=frame_h,
+        grid_w=grid,
+        person_id=person_id,
+        person_by_tracklet=pmap,
+    )

@@ -36,6 +36,17 @@ async def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
 
 
+@app.get("/guide", include_in_schema=False)
+async def guide() -> FileResponse:
+    """Serve the standalone Swedish user guide ("Användarhandledning") —
+    documentation-as-a-page, reachable from the UI's top bar. Always
+    available (not behind any feature toggle): the guide is how a new user
+    learns the tool, including which optional features exist. Its own small
+    script marks sections for disabled Phase 5 features by asking
+    /api/features."""
+    return FileResponse(STATIC_DIR / "guide.html")
+
+
 @app.get("/health", include_in_schema=False)
 async def health() -> dict[str, str]:
     return {"status": "ok"}

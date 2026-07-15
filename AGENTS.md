@@ -33,14 +33,18 @@ for the offline tool). Code-level citations are in the companion scout report.
 | `analysis/events.py` | P5: behavior/situation/irrational status diffed into discrete events (STILLA/MOT_FARA/IRRATIONELL/HAZARD) |
 | `analysis/irrational.py` | Phase 4: IRRATIONELL sub-signal ensemble (erratic path, panic sprint, counter-flow, oscillation, freeze-and-bolt) over the same tracklet trajectories STILLA/MOT_FARA read |
 | `review/` | Thin review UI + REST API over the artifact. **Never imports the engine's heavy passes** (interface rule 2 — see the Phase 4 section below for the one deliberate exception: pure P5 derivation functions). |
-| `review/main.py` | FastAPI app, mounts static + routes |
-| `review/routes.py` | REST endpoints (runs, events, tracklets, persons, video, export, bookmarks, screenshots, event review, operator-notes import, comparison, debrief, hazard-marker) |
-| `review/annotations.py` | Append-only annotation log — separate from AI tables (survives re-analysis). Kinds: bookmarks, screenshots (Phase 2), verdicts, operator_notes (Phase 3), hazard_marker (Phase 4) |
-| `review/operator_notes.py` | Phase 3: forgiving parser for imported operator field notes → `(t, text)` rows |
-| `review/comparison.py` | Phase 3: time-proximity matching of AI events vs. operator notes → 3-bucket comparison |
+| `review/main.py` | FastAPI app, mounts static + routes + `/guide` (the standalone Swedish user guide page) |
+| `review/routes.py` | REST endpoints (runs, events, tracklets, persons, video, export, bookmarks, screenshots, event review, operator-notes import, comparison, debrief, hazard-marker; Phase 5: features, identity-corrections, trajectory, ground-truth, run compare, heatmap) |
+| `review/annotations.py` | Append-only annotation log — separate from AI tables (survives re-analysis). Kinds: bookmarks, screenshots (Phase 2), verdicts, operator_notes (Phase 3), hazard_marker (Phase 4), identity_corrections, ground_truth (Phase 5) |
+| `review/operator_notes.py` | Phase 3: forgiving parser for imported operator field notes → `(t, text)` rows (Phase 5 reuses it verbatim for ground-truth import) |
+| `review/comparison.py` | Phase 3: time-proximity matching of AI events vs. operator notes → 3-bucket comparison; also home of the shared `greedy_time_match` (Phase 5's ground-truth scoring + run diff reuse it) |
 | `review/debrief.py` | Phase 3: renders the standalone HTML training-debrief report |
 | `review/hazard.py` | Phase 4: retroactive MOT_FARA recompute against a reviewer-placed hazard marker, over already-persisted P2 tracklets |
-| `review/static/` | HTML5 `<video>` + overlay canvas + timeline strip (single-page, no build step) |
+| `review/identity_corrections.py` | Phase 5: read-time replay of manual split/merge ops over P3's persons (corrections are annotations, never mutations of `persons/`) |
+| `review/ground_truth.py` | Phase 5: scores AI events AND operator notes against the exercise leader's reference truth (time-proximity only) |
+| `review/run_compare.py` | Phase 5: diff two runs of the same video (config diff + per-category event buckets); also a CLI (`python -m review.run_compare`) |
+| `review/heatmap.py` | Phase 5: dwell-seconds grid over P2 tracklets (raw-pixel space — stab offsets aren't persisted, same documented caveat as P3's gate) |
+| `review/static/` | HTML5 `<video>` + overlay canvas + timeline strip + Phase 5 panes + `guide.html` (single-page, no build step) |
 
 The carved-out analyzer modules in `analysis/` are independent copies of their
 `app/vision/` originals. The realtime `app/vision/` modules are left untouched.
@@ -62,7 +66,7 @@ Sidecar store at `<output>/<run_id>/`:
 - `tracklets/<pass>.jsonl` — P2's per-(track_id, frame) tracker/Kalman-adjusted boxes, referencing back to `det_id`
 - `persons/<pass>.jsonl` — P3's per-identity records: `person_id, tracklet_ids, embedding_centroids, first/last_seen, confirmation_state, assoc_audit`
 - `events/<pass>.jsonl` — P5's per-event records: `event_id, category, person_id|null, t_start, t_end, confidence, evidence, review` (default unreviewed). Categories: STILLA, MOT_FARA, IRRATIONELL (Phase 4), HAZARD.
-- `annotations/{bookmarks,screenshots,verdicts,operator_notes,hazard_marker}.jsonl` — human review layer. **Append-only log, separate from AI tables** — never mixed into events/, never overwritten by re-analysis. bookmarks/screenshots/operator_notes are entity-per-row with tombstone soft-delete; `verdicts` and `hazard_marker` are latest-row-wins instead (a verdict is a state-transition history keyed by `event_id`; `hazard_marker` is a single evolving value with no key — only one exists per run) — see `review/annotations.py`'s module docstring, `AnnotationStore.all_verdicts`, `AnnotationStore.get_hazard_marker`.
+- `annotations/{bookmarks,screenshots,verdicts,operator_notes,hazard_marker,identity_corrections,ground_truth}.jsonl` — human review layer. **Append-only log, separate from AI tables** — never mixed into events/, never overwritten by re-analysis. bookmarks/screenshots/operator_notes/identity_corrections/ground_truth are entity-per-row with tombstone soft-delete; `verdicts` and `hazard_marker` are latest-row-wins instead (a verdict is a state-transition history keyed by `event_id`; `hazard_marker` is a single evolving value with no key — only one exists per run) — see `review/annotations.py`'s module docstring, `AnnotationStore.all_verdicts`, `AnnotationStore.get_hazard_marker`. An `identity_corrections` row is one split/merge *operation*; tombstoning it = undo (the read-time projection replays live ops only).
 - `annotations/screenshots/<id>.png` — client-composited PNGs (browser does the compositing; the server never renders a frame — report §2.5 dual-renderer fix)
 - `checkpoints/<pass>/` — P1 resumable state only; P2/P3/P5 always re-run in full (cheap, deterministic given P1's output)
 
@@ -218,6 +222,69 @@ rendering an SVG strip — one lane per person (STILLA/MOT_FARA/IRRATIONELL
 spans), one for HAZARD, one for bookmarks, one for operator notes. Click any
 span/marker to seek. Pure client-side render over data already fetched for
 the event list; no new endpoint beyond the existing `/events`.
+
+### Phase 5: five toggled bonus features + user guide
+
+Report §5.5-5.9 ("extensibility dividend"), built per the captain's two
+requirements: every feature behind its own env-var toggle, and a standalone
+Swedish user guide page. Full rationale in DECISIONS B27 — this is the
+pointer summary.
+
+**Toggles** (`review/config.py`, passed through by
+`docker-compose.offline.yml`; all default ON, all independent; a disabled
+feature's endpoints 404 with the env-var name in the detail, and the UI
+hides its tab/button via `GET /api/features`):
+
+| Env var | Feature |
+|---|---|
+| `FEATURE_DOSSIER` | Person dossier + manual split/merge corrections |
+| `FEATURE_GROUND_TRUTH` | "Facit" reference truth + AI/operator scoring |
+| `FEATURE_RUN_COMPARE` | Two-run diff (REST/UI + `python -m review.run_compare`) |
+| `FEATURE_CLIP_EXPORT` | Annotated clip export (client-only; toggle just drives UI visibility) |
+| `FEATURE_HEATMAP` | Dwell/coverage heatmap layer + endpoint |
+
+- **Identity corrections are annotations, never mutations.** A split/merge
+  is one op row in `annotations/identity_corrections.jsonl`;
+  `review/identity_corrections.py:apply_corrections` replays live ops over
+  the engine's persons at read time (`routes.py:_corrected_projection`).
+  The corrected tracklet→person map flows into `/persons`, the overlay
+  join, served events' `person_id` (re-keyed via `evidence.tracklet_id` —
+  the same stable key as Phase 4's verdict carry-forward), and the
+  heatmap's person filter. Ops that no longer resolve are skipped and
+  reported, never guessed. Writes are validated by dry-running the
+  projection; merging simultaneously-visible persons is allowed but warned
+  (human may out-rank P3's hard gate, e.g. tracker twin boxes).
+  **Toggle-off asymmetry (deliberate):** `FEATURE_DOSSIER=0` hides the UI
+  and blocks new writes, but recorded corrections keep applying and the
+  corrections list stays readable — a config flag never hides recorded
+  human work.
+- **Ground truth reuses the operator-notes format and parser verbatim**
+  (one syntax, one parser), and scores by time proximity only via the
+  shared `greedy_time_match` in `review/comparison.py` (extracted from
+  Phase 3 so matching semantics can't drift). Nothing persisted; the score
+  recomputes from live data every call.
+- **Run compare is a batch capability**: producing the second run is hours
+  of P1 inference and always happens via the `analyze` CLI — the UI/CLI
+  only diff finished sidecars. Same `video_hash` enforced; diff reads
+  frozen engine `events/` with NO verdict/hazard/correction overlays (the
+  question is what the configs found). Default tolerance 10 s (tighter
+  than the operator comparison's 60 s — both sides machine-derived).
+- **Clip export is entirely client-side** (canvas.captureStream +
+  MediaRecorder over the same video+overlay composite as screenshots) —
+  no second annotated-frame renderer, ever (report §2.5). Real-time
+  recording is a known property, documented in the guide.
+- **Heatmap is raw-pixel space, not the report's "stabilized frame"** —
+  stab offsets were never persisted (same documented gap as P3's
+  spatio-temporal gate, B23). Honest caveat in UI + guide; persisting
+  offsets in P2 upgrades both in one place later. Frame dims come from
+  P1's pass meta (`width`/`height`, added in Phase 5); older sidecars fall
+  back to box extents.
+- **User guide** (`review/static/guide.html`, served at `/guide`, linked
+  from the top bar): Swedish-only, written for a first-time user,
+  end-to-end (analyze → open → layers → timeline → review queue →
+  operator comparison → hazard marker incl. verdict carry-forward caveat →
+  all five Phase 5 features → toggle table). Never behind a toggle; marks
+  disabled features itself via `/api/features`.
 
 ### Identity design (Phase 1, P3)
 

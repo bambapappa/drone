@@ -56,8 +56,24 @@ Phase 4 adds one more kind:
                     itself lives in review/hazard.py, not here — this module
                     only stores the marker's position.
 
-Identity corrections (split/merge person_id) remain a later phase — not
-implemented here.
+Phase 5 adds two more entity-per-row kinds (tombstone-deletable, exactly
+like bookmarks):
+  - identity_corrections: manual split/merge ops on P3's persons (report
+                    §3.3-4, §5.5). Each row is ONE operation — either
+                    {"op": "merge", "person_ids": [..]} or {"op": "split",
+                    "person_id": N, "tracklet_ids": [..]} — and the read
+                    side REPLAYS live ops in append order over the engine's
+                    persons table (review/identity_corrections.py). The
+                    persons table itself is never rewritten: a correction is
+                    labeled ground truth (future training data per the
+                    report), not an edit of engine output, mirroring how
+                    verdicts overlay events without touching events/.
+                    Tombstoning an op = undo (the projection simply skips it).
+  - ground_truth:   the exercise leader's reference truth ("facit") for the
+                    film, one timed entry per row, same shape as
+                    operator_notes (t + text + raw_line). Scoring against AI
+                    events / operator notes is recomputed on demand
+                    (review/ground_truth.py), never persisted.
 """
 
 from __future__ import annotations
@@ -73,12 +89,24 @@ SCREENSHOTS = "screenshots"
 VERDICTS = "verdicts"
 OPERATOR_NOTES = "operator_notes"
 HAZARD_MARKER = "hazard_marker"
+IDENTITY_CORRECTIONS = "identity_corrections"
+GROUND_TRUTH = "ground_truth"
 # Entity-per-row kinds: one row = one thing, tombstone-deletable, exactly
 # like bookmarks/screenshots. Verdicts and hazard_marker are NOT in this set
 # — they are single evolving values with latest-row-wins semantics instead
 # (see `all_verdicts` / `get_hazard_marker`).
-ENTITY_KINDS = (BOOKMARKS, SCREENSHOTS, OPERATOR_NOTES)
-ALL_KINDS = (BOOKMARKS, SCREENSHOTS, VERDICTS, OPERATOR_NOTES, HAZARD_MARKER)
+ENTITY_KINDS = (BOOKMARKS, SCREENSHOTS, OPERATOR_NOTES, IDENTITY_CORRECTIONS, GROUND_TRUTH)
+ALL_KINDS = (
+    BOOKMARKS,
+    SCREENSHOTS,
+    VERDICTS,
+    OPERATOR_NOTES,
+    HAZARD_MARKER,
+    IDENTITY_CORRECTIONS,
+    GROUND_TRUTH,
+)
+
+CORRECTION_OPS = ("merge", "split")
 
 REVIEW_STATES = ("unreviewed", "confirmed", "rejected")
 
@@ -357,6 +385,77 @@ class AnnotationStore:
         for row in self._iter_raw(HAZARD_MARKER):
             latest = row
         return latest
+
+    # ---- identity corrections (Phase 5 manual split/merge) ----
+
+    def add_identity_correction(
+        self,
+        op: str,
+        person_ids: list[int] | None = None,
+        person_id: int | None = None,
+        tracklet_ids: list[int] | None = None,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        """Record one manual identity-correction operation.
+
+        merge: `person_ids` (≥2 projected person ids to unify).
+        split: `person_id` + `tracklet_ids` (the tracklets to detach into a
+        new person).
+
+        This method only persists the op — semantic validation (do the
+        persons exist, do the tracklets belong) happens in the API layer
+        against the *current projection*, because validity depends on the
+        engine's persons table plus every earlier live op, which this
+        storage layer deliberately knows nothing about. The stored row is a
+        labeled ground-truth fact ("a human judged these to be the same/
+        different people"), so it survives re-analysis like every other
+        annotation; if a later engine run renumbers persons, the projection
+        skips ops that no longer resolve rather than guessing.
+        """
+        if op not in CORRECTION_OPS:
+            raise ValueError(f"unknown correction op: {op!r}")
+        row: dict[str, Any] = {"op": op, "reason": reason}
+        if op == "merge":
+            row["person_ids"] = [int(p) for p in (person_ids or [])]
+        else:
+            row["person_id"] = int(person_id) if person_id is not None else None
+            row["tracklet_ids"] = [int(t) for t in (tracklet_ids or [])]
+        return self._append(IDENTITY_CORRECTIONS, row)
+
+    def list_identity_corrections(self) -> list[dict[str, Any]]:
+        """Live correction ops in append order — the exact replay order the
+        read-time projection applies them in."""
+        return self._live_rows(IDENTITY_CORRECTIONS)
+
+    def delete_identity_correction(self, annotation_id: str) -> bool:
+        """Tombstone one correction op = undo. The projection replays only
+        live ops, so a tombstoned op simply stops applying; the audit trail
+        of it having existed remains in the log."""
+        live = {r["annotation_id"] for r in self.list_identity_corrections()}
+        if annotation_id not in live:
+            return False
+        self._append_tombstone(IDENTITY_CORRECTIONS, annotation_id)
+        return True
+
+    # ---- ground truth ("facit", Phase 5) ----
+
+    def add_ground_truth(self, t: float, text: str, raw_line: str | None = None) -> dict[str, Any]:
+        """Add one reference-truth entry at video time t (seconds). Same
+        shape as operator notes: the exercise leader's script is timed
+        observations too, and reusing the shape lets the forgiving
+        operator-notes parser handle the import."""
+        return self._append(GROUND_TRUTH, {"t": round(float(t), 3), "text": text, "raw_line": raw_line})
+
+    def list_ground_truth(self) -> list[dict[str, Any]]:
+        return self._live_rows(GROUND_TRUTH)
+
+    def delete_ground_truth(self, annotation_id: str) -> bool:
+        """Tombstone one reference-truth entry. Idempotent, like delete_bookmark."""
+        live = {r["annotation_id"] for r in self.list_ground_truth()}
+        if annotation_id not in live:
+            return False
+        self._append_tombstone(GROUND_TRUTH, annotation_id)
+        return True
 
     # ---- bulk read for the UI ----
 

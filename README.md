@@ -153,6 +153,35 @@ flaggor, farhändelser, bokmärken och importerade operatörsanteckningar som
 en horisontell remsa — klicka var som helst för att söka videon dit,
 vilket gör en 16-minutersfilm till en översikt på några sekunder.
 
+### Bonusfunktioner bakom egna flaggor (fas 5)
+
+Fem fristående tillägg, vart och ett bakom en egen miljövariabel (alla
+default på; oberoende av varandra — se [docs/CONFIG.md](docs/CONFIG.md)):
+
+- **Persondossié med dela/slå ihop** (`FEATURE_DOSSIER`): per person visas
+  bildutsnitt över tid, rörelsebanan, personens händelser och P3:s
+  associationsspår (varför spår blev samma person). Felräknade identiteter
+  korrigeras direkt i vyn; korrigeringar sparas som facit-märkning i den
+  tilläggsbara annoteringsloggen (aldrig som ändring av motorns utdata) och
+  kan ångras.
+- **Facit** (`FEATURE_GROUND_TRUTH`): övningsledarens referenssanning
+  skrivs in som tidsatta rader (samma överseende format som
+  operatörsanteckningarna) och verktyget rättar **både** AI:n och
+  operatören mot den — ett träningsinstrument för båda.
+- **Jämför körningar** (`FEATURE_RUN_COMPARE`): kör analysen två gånger
+  med olika inställningar (batch via `analyze`) och diffa händelseloggarna
+  i fliken **Körningar** eller via `python -m review.run_compare` —
+  svarar direkt på "hittar den tyngre konfigurationen mer?".
+- **Klippexport** (`FEATURE_CLIP_EXPORT`): 🎬-knappen spelar in ett
+  WebM-klipp ±5 s runt en händelse med boxar/flaggor inritade, helt i
+  webbläsaren (samma enda annoterings-renderare som skärmdumparna).
+- **Värmekarta** (`FEATURE_HEATMAP`): uppehållskarta över var personer
+  befann sig och hur länge — för sökmönster-genomgångar.
+
+Granskningsvyn har också en **användarhandledning på svenska** som egen
+sida (❓-knappen uppe till höger, eller `/guide`) — skriven för den som
+aldrig sett verktyget, från "analysera en film" till samtliga flikar.
+
 ## Utveckling
 
 ```bash

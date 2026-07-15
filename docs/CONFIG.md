@@ -21,6 +21,22 @@ Defaultvärdena matchar `docker-compose.offline.yml`s volymmonteringar, så
 `uvicorn review.main:app` (eller `make review`) fungerar utan konfiguration
 från repo-roten.
 
+Fas 5:s funktioner slås av/på var för sig med egna miljövariabler
+(alla default **på**; `1/true/on/yes` respektive `0/false/off/no`,
+oigenkännligt värde faller tillbaka på default — se `review/config.py`):
+
+| Variabel | Default | Styr |
+|---|---|---|
+| `FEATURE_DOSSIER` | `1` | Persondossié + manuell dela/slå ihop-korrigering. Redan sparade korrigeringar fortsätter tillämpas vid läsning även när flaggan är av — den döljer verktyget, aldrig sparat mänskligt arbete. |
+| `FEATURE_GROUND_TRUTH` | `1` | Facit-fliken (referenssanning + poängsättning av AI och operatör). |
+| `FEATURE_RUN_COMPARE` | `1` | Jämförelse av två körningar (REST/UI **och** `python -m review.run_compare`). |
+| `FEATURE_CLIP_EXPORT` | `1` | Klippexport-knappen (helt klientsidig — ingen serverkomponent). |
+| `FEATURE_HEATMAP` | `1` | Värmekarte-lagret och `/api/runs/{id}/heatmap`. |
+
+En avstängd funktions API-slut svarar 404 med miljövariabelns namn i
+felmeddelandet; UI:t döljer motsvarande flik/knapp via `GET /api/features`.
+Flaggorna är oberoende av varandra.
+
 Fas 3:s jämförelse-/debriefingslut (`/api/runs/{id}/comparison` och
 `.../debrief`) tar en valfri `tolerance_s`-frågeparameter (default `60.0`,
 se `review/comparison.py` för motiveringen) i stället för en miljövariabel

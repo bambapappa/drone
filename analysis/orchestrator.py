@@ -364,6 +364,11 @@ class OfflineOrchestrator:
         uninterrupted run frame-for-frame, bit-identically.
         """
         pass_name = self.P1_PASS_NAME
+        # width/height are the *effective* (post-ROI) dims — the coordinate
+        # space every persisted box lives in. Recorded so artifact consumers
+        # (e.g. the review heatmap) can size grids without decoding a frame;
+        # older sidecars lack these and consumers fall back to box extents.
+        eff_w, eff_h = self._effective_dims()
         pass_meta = {
             "description": "P1 detection pass — tiled inference over every frame",
             "config": self.config.to_dict(),
@@ -371,6 +376,8 @@ class OfflineOrchestrator:
             "device": self.config.device,
             "fps": self.meta.fps,
             "total_frames": self.meta.total_frames,
+            "width": eff_w,
+            "height": eff_h,
         }
         self.store.record_pass_start(pass_name, pass_meta)
 

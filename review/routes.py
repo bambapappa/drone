@@ -139,6 +139,49 @@ def _run_fps(store: ArtifactStore) -> float:
     return store.manifest.get("passes", {}).get(p1, {}).get("meta", {}).get("fps", 25.0)
 
 
+def _best_review_match(target: dict[str, Any], candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Pick the reviewed original MOT_FARA event that best corresponds to a
+    recomputed one: prefer time-overlap, else the closest t_start."""
+    overlapping = [
+        c for c in candidates if c["t_start"] <= target["t_end"] and c["t_end"] >= target["t_start"]
+    ]
+    pool = overlapping or candidates
+    return min(pool, key=lambda c: abs(c["t_start"] - target["t_start"]))
+
+
+def _carry_forward_mot_fara_reviews(
+    original: list[dict[str, Any]], recomputed: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Best-effort carry-forward of Phase 3 verdicts from the engine's
+    original MOT_FARA events onto Phase 4's hazard-marker recompute.
+
+    MOT_FARA event ids and spans are not stable across different hazard
+    marker positions, so this cannot be an exact identity match — it matches
+    by person_id plus closest/overlapping time span, which is the best
+    available signal since a person's MOT_FARA span usually only shifts
+    slightly when the danger point moves. Only original events carrying a
+    non-default verdict (state != "unreviewed" or a note) are considered, so
+    an untouched recomputed event keeps its default unreviewed review field.
+    """
+    by_person: dict[Any, list[dict[str, Any]]] = {}
+    for ev in original:
+        review = ev.get("review") or {}
+        if review.get("state", "unreviewed") == "unreviewed" and not review.get("note"):
+            continue
+        by_person.setdefault(ev.get("person_id"), []).append(ev)
+    if not by_person:
+        return recomputed
+    result = []
+    for ev in recomputed:
+        candidates = by_person.get(ev.get("person_id"))
+        if candidates:
+            match = _best_review_match(ev, candidates)
+            ev = dict(ev)
+            ev["review"] = match["review"]
+        result.append(ev)
+    return result
+
+
 def _apply_hazard_override(
     events: list[dict[str, Any]], store: ArtifactStore, ann: AnnotationStore
 ) -> list[dict[str, Any]]:
@@ -162,7 +205,9 @@ def _apply_hazard_override(
         hazard_x=marker["x"],
         hazard_y=marker["y"],
     )
+    original_mot_fara = [e for e in events if e.get("category") == CATEGORY_MOT_FARA]
     kept = [e for e in events if e.get("category") != CATEGORY_MOT_FARA]
+    recomputed = _carry_forward_mot_fara_reviews(original_mot_fara, recomputed)
     merged = kept + recomputed
     merged.sort(key=lambda e: (e["t_start"], e["category"], e["event_id"]))
     return merged

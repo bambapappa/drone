@@ -5,15 +5,15 @@ carried-over BehaviorAnalyzer and SituationAnalyzer over the trajectory +
 frame streams, and diffs their per-frame status output into discrete events
 with onset/offset timestamps and confidence.
 
-Phase 2 categories (per the architecture report §3 and the build-order in §7):
-  STILLA     — sustained no-motion (carried-over BehaviorAnalyzer.STATUS_STILL)
-  MOT_FARA   — sustained motion toward a marked/detected danger point
-               (carried-over BehaviorAnalyzer.STATUS_TOWARD)
-  HAZARD     — fire/smoke onset (carried-over SituationAnalyzer)
-
-IRRATIONELL is explicitly Phase 4 per the report's build order; the
-sub-signal set in §4 slots in here as another status stream feeding the same
-diff, without restructuring this module.
+Categories (per the architecture report §3 and the build-order in §7):
+  STILLA       — sustained no-motion (carried-over BehaviorAnalyzer.STATUS_STILL)
+  MOT_FARA     — sustained motion toward a marked/detected danger point
+                 (carried-over BehaviorAnalyzer.STATUS_TOWARD)
+  IRRATIONELL  — Phase 4 heuristic ensemble over the same trajectories
+                 (analysis/irrational.py); STILLA takes precedence over it
+                 (see derive_events), MOT_FARA has no precedence interaction
+                 with either.
+  HAZARD       — fire/smoke onset (carried-over SituationAnalyzer)
 
 This pass is the marriage of the report's P4 (per-frame behavior/situation
 status) and P5 (status-stream diffing) into a single pass. The analyzers are
@@ -40,17 +40,18 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 from analysis.behavior import STATUS_STILL, STATUS_TOWARD, BehaviorAnalyzer, BehaviorConfig
+from analysis.irrational import CATEGORY_IRRATIONELL, IrrationalConfig, derive_irrational_events
 from analysis.orchestrator import OfflineConfig
 from analysis.situation import SituationAnalyzer
 
 # Internal category enum values stay English (per AGENTS.md convention); the
-# GUI maps these to Swedish display text. A future category (IRRATIONELL,
-# THREAT, ...) adds a constant here and a Swedish label in the UI registry.
+# GUI maps these to Swedish display text. A future category (THREAT, ...)
+# adds a constant here and a Swedish label in the UI registry.
 CATEGORY_STILLA = "STILLA"
 CATEGORY_MOT_FARA = "MOT_FARA"
 CATEGORY_HAZARD = "HAZARD"
 
-ALL_CATEGORIES = (CATEGORY_STILLA, CATEGORY_MOT_FARA, CATEGORY_HAZARD)
+ALL_CATEGORIES = (CATEGORY_STILLA, CATEGORY_MOT_FARA, CATEGORY_IRRATIONELL, CATEGORY_HAZARD)
 
 
 def _event_id(category: str, seq: int) -> str:
@@ -107,6 +108,38 @@ def _behavior_config_from_offline(config: OfflineConfig) -> BehaviorConfig:
         toward_angle_deg=config.beh_toward_angle_deg,
         toward_time_s=config.beh_toward_time_s,
         prone_aspect=config.beh_prone_aspect,
+    )
+
+
+def _irrational_config_from_offline(config: OfflineConfig) -> IrrationalConfig:
+    return IrrationalConfig(
+        erratic_window_s=config.irr_erratic_window_s,
+        erratic_tortuosity=config.irr_erratic_tortuosity,
+        erratic_min_speed_bh=config.irr_erratic_min_speed_bh,
+        erratic_heading_circ_var=config.irr_erratic_heading_circ_var,
+        sprint_speed_bh=config.irr_sprint_speed_bh,
+        sprint_time_s=config.irr_sprint_time_s,
+        sprint_group_multiple=config.irr_sprint_group_multiple,
+        counterflow_angle_deg=config.irr_counterflow_angle_deg,
+        counterflow_time_s=config.irr_counterflow_time_s,
+        counterflow_min_neighbors=config.irr_counterflow_min_neighbors,
+        counterflow_radius_bh=config.irr_counterflow_radius_bh,
+        counterflow_coherence=config.irr_counterflow_coherence,
+        oscillation_window_s=config.irr_oscillation_window_s,
+        oscillation_min_reversals=config.irr_oscillation_min_reversals,
+        oscillation_min_excursion_bh=config.irr_oscillation_min_excursion_bh,
+        freeze_speed_bh=config.irr_freeze_speed_bh,
+        freeze_time_s=config.irr_freeze_time_s,
+        bolt_speed_bh=config.irr_bolt_speed_bh,
+        bolt_within_s=config.irr_bolt_within_s,
+        freeze_bolt_hold_s=config.irr_freeze_bolt_hold_s,
+        weight_erratic=config.irr_weight_erratic,
+        weight_sprint=config.irr_weight_sprint,
+        weight_counterflow=config.irr_weight_counterflow,
+        weight_oscillation=config.irr_weight_oscillation,
+        weight_freeze_bolt=config.irr_weight_freeze_bolt,
+        score_threshold=config.irr_score_threshold,
+        sustain_s=config.irr_sustain_s,
     )
 
 
@@ -522,10 +555,13 @@ def derive_events(
     # would be wasteful; instead, since the danger point only affects MOT_FARA
     # (STILLA is danger-independent), we run behavior with a *constant* danger
     # point equal to the time-weighted mean of all non-None danger points.
-    # This is an approximation — Phase 4's retroactive hazard feature will do
-    # this per-frame properly — but it captures the dominant case (one
-    # sustained hazard during a film) and degrades gracefully to None when no
-    # hazard ever fires.
+    # This is an approximation that captures the dominant case (one sustained
+    # hazard during a film) and degrades gracefully to None when no hazard
+    # ever fires. Phase 4 adds a separate reviewer-driven override on top of
+    # this — the review layer can recompute MOT_FARA against a manually
+    # placed/moved hazard marker (review/hazard.py), merged in at read time
+    # exactly like Phase 3's verdicts overlay; it never rewrites this engine
+    # output.
     present_dangers = [p for p in danger_px_by_frame.values() if p is not None]
     mean_danger: tuple[float, float] | None = None
     if present_dangers:
@@ -544,11 +580,33 @@ def derive_events(
         danger_px=mean_danger,
     )
 
+    # IRRATIONELL (Phase 4, report §4): the same tracklet trajectories, run
+    # through the sub-signal ensemble in analysis/irrational.py. Precedence
+    # rule — STILLA wins over IRRATIONELL — is implemented by collecting
+    # every STILLA event's covered frames per tracklet from the behavior
+    # events we already computed above (no second BehaviorAnalyzer replay
+    # needed) and forcing those frames to non-fired in the ensemble.
+    still_frames_by_tracklet: dict[int, set[int]] = defaultdict(set)
+    for ev in behavior_events:
+        if ev.category == CATEGORY_STILLA:
+            tid = ev.evidence.get("tracklet_id")
+            if tid is not None:
+                frame_range = range(ev.evidence["frame_start"], ev.evidence["frame_end"] + 1)
+                still_frames_by_tracklet[tid].update(frame_range)
+
+    irrational_events = derive_irrational_events(
+        tracklet_rows,
+        person_by_tracklet=person_by_tracklet,
+        fps=fps,
+        config=_irrational_config_from_offline(config),
+        still_frames_by_tracklet=still_frames_by_tracklet,
+    )
+
     # Hazard events: diff the timelines we already collected.
     hazard_events = _diff_and_number_hazard_events(fire_timeline, smoke_timeline, fps)
 
     # Merge into a single time-ordered log. Stable sort preserves the
     # within-category ordering above.
-    all_events = behavior_events + hazard_events
+    all_events = behavior_events + irrational_events + hazard_events
     all_events.sort(key=lambda e: (e.t_start, e.category, e.event_id))
     return all_events

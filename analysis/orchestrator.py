@@ -132,6 +132,39 @@ class OfflineConfig:
     # merge for the honesty band ("N unika, varav M osäkra sammanslagningar").
     p3_uncertain_margin: float = 0.04
 
+    # ---- P4 IRRATIONELL sub-signals (report §4) ----
+    # Units: body-heights/second for speed, degrees for angles, seconds for
+    # durations. Defaults and rationale for the two thresholds the report
+    # itself leaves unspecified (erratic_heading_circ_var, counterflow_radius_bh)
+    # are documented on analysis.irrational.IrrationalConfig.
+    irr_erratic_window_s: float = 10.0
+    irr_erratic_tortuosity: float = 3.0
+    irr_erratic_min_speed_bh: float = 0.4
+    irr_erratic_heading_circ_var: float = 0.6
+    irr_sprint_speed_bh: float = 2.5
+    irr_sprint_time_s: float = 2.0
+    irr_sprint_group_multiple: float = 2.0
+    irr_counterflow_angle_deg: float = 120.0
+    irr_counterflow_time_s: float = 3.0
+    irr_counterflow_min_neighbors: int = 3
+    irr_counterflow_radius_bh: float = 10.0
+    irr_counterflow_coherence: float = 0.7
+    irr_oscillation_window_s: float = 30.0
+    irr_oscillation_min_reversals: int = 3
+    irr_oscillation_min_excursion_bh: float = 1.5
+    irr_freeze_speed_bh: float = 0.1
+    irr_freeze_time_s: float = 3.0
+    irr_bolt_speed_bh: float = 2.0
+    irr_bolt_within_s: float = 2.0
+    irr_freeze_bolt_hold_s: float = 3.5
+    irr_weight_erratic: float = 1.0
+    irr_weight_sprint: float = 1.0
+    irr_weight_counterflow: float = 1.0
+    irr_weight_oscillation: float = 1.0
+    irr_weight_freeze_bolt: float = 1.0
+    irr_score_threshold: float = 1.0
+    irr_sustain_s: float = 3.0
+
     # Situation assessment
     hazard_min_area: float = 0.004
     hazard_hold_s: float = 2.0
@@ -148,7 +181,16 @@ class OfflineConfig:
     track_buffer_s: float = 8.0
 
     def to_dict(self) -> dict[str, Any]:
-        """Serializable config for the manifest."""
+        """Serializable config for the manifest.
+
+        Includes beh_* (previously missing — a latent provenance gap found
+        while building Phase 4's retroactive hazard recompute, which must
+        reconstruct the run's exact BehaviorAnalyzer thresholds from the
+        manifest to stay faithful to "only the danger point changes"; see
+        review/hazard.py). No CLI flag exposes beh_* today so every existing
+        run already used these defaults — recording them just closes the gap
+        for future overrides and directly-constructed configs (tests, scripts).
+        """
         return {
             "model": self.model,
             "device": self.device,
@@ -169,6 +211,41 @@ class OfflineConfig:
             "p3_max_dist_frac": self.p3_max_dist_frac,
             "p3_confirm_s": self.p3_confirm_s,
             "p3_uncertain_margin": self.p3_uncertain_margin,
+            "beh_window_s": self.beh_window_s,
+            "beh_min_history_s": self.beh_min_history_s,
+            "beh_still_speed": self.beh_still_speed,
+            "beh_still_time_s": self.beh_still_time_s,
+            "beh_toward_speed": self.beh_toward_speed,
+            "beh_toward_angle_deg": self.beh_toward_angle_deg,
+            "beh_toward_time_s": self.beh_toward_time_s,
+            "beh_prone_aspect": self.beh_prone_aspect,
+            "irr_erratic_window_s": self.irr_erratic_window_s,
+            "irr_erratic_tortuosity": self.irr_erratic_tortuosity,
+            "irr_erratic_min_speed_bh": self.irr_erratic_min_speed_bh,
+            "irr_erratic_heading_circ_var": self.irr_erratic_heading_circ_var,
+            "irr_sprint_speed_bh": self.irr_sprint_speed_bh,
+            "irr_sprint_time_s": self.irr_sprint_time_s,
+            "irr_sprint_group_multiple": self.irr_sprint_group_multiple,
+            "irr_counterflow_angle_deg": self.irr_counterflow_angle_deg,
+            "irr_counterflow_time_s": self.irr_counterflow_time_s,
+            "irr_counterflow_min_neighbors": self.irr_counterflow_min_neighbors,
+            "irr_counterflow_radius_bh": self.irr_counterflow_radius_bh,
+            "irr_counterflow_coherence": self.irr_counterflow_coherence,
+            "irr_oscillation_window_s": self.irr_oscillation_window_s,
+            "irr_oscillation_min_reversals": self.irr_oscillation_min_reversals,
+            "irr_oscillation_min_excursion_bh": self.irr_oscillation_min_excursion_bh,
+            "irr_freeze_speed_bh": self.irr_freeze_speed_bh,
+            "irr_freeze_time_s": self.irr_freeze_time_s,
+            "irr_bolt_speed_bh": self.irr_bolt_speed_bh,
+            "irr_bolt_within_s": self.irr_bolt_within_s,
+            "irr_freeze_bolt_hold_s": self.irr_freeze_bolt_hold_s,
+            "irr_weight_erratic": self.irr_weight_erratic,
+            "irr_weight_sprint": self.irr_weight_sprint,
+            "irr_weight_counterflow": self.irr_weight_counterflow,
+            "irr_weight_oscillation": self.irr_weight_oscillation,
+            "irr_weight_freeze_bolt": self.irr_weight_freeze_bolt,
+            "irr_score_threshold": self.irr_score_threshold,
+            "irr_sustain_s": self.irr_sustain_s,
         }
 
 
@@ -645,9 +722,9 @@ class OfflineOrchestrator:
         tracklets and a fresh frame decode (the situation analyzer needs
         pixels). Returns the number of events emitted.
 
-        IRRATIONELL is explicitly Phase 4 per the report's build order and is
-        not derived here — the sub-signal set in §4 will slot in as another
-        status stream feeding the same diff, without restructuring this pass.
+        IRRATIONELL (Phase 4, report §4) is derived from the same tracklets
+        by analysis/irrational.py's sub-signal ensemble — see analysis/events.py's
+        derive_events for how it's combined with STILLA/MOT_FARA/HAZARD.
         """
         pass_name = self.P5_PASS_NAME
         pass_meta = {

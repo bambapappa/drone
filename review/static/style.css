@@ -20,6 +20,7 @@
   --chip-on: #0e4a66;
   --smoke: #aab4be;
   --fire: #ff6b35;
+  --irrationell: #a55eea;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -278,9 +279,10 @@ main { flex: 1; min-height: 0; }
   font-weight: 700; letter-spacing: .5px;
   text-transform: uppercase;
 }
-.cat-STILLA    { background: #5c1119; color: var(--danger); }
-.cat-MOT_FARA  { background: #5a3a00; color: var(--warn); }
-.cat-HAZARD    { background: #3a1d10; color: var(--fire); }
+.cat-STILLA      { background: #5c1119; color: var(--danger); }
+.cat-MOT_FARA    { background: #5a3a00; color: var(--warn); }
+.cat-IRRATIONELL { background: #33184a; color: var(--irrationell); }
+.cat-HAZARD      { background: #3a1d10; color: var(--fire); }
 
 .inline-form {
   display: grid;
@@ -344,6 +346,25 @@ main { flex: 1; min-height: 0; }
 
 #compare-stats { margin: 8px 0; }
 #compare-list li .label { font-size: 12px; }
+
+/* Timeline strip (Phase 4): per-person flag lanes + hazard/bookmark/operator
+   markers. Wide content (a whole film's worth of seconds) scrolls inside its
+   own container rather than the page — the SVG itself is sized to the
+   film's duration and can be far wider than the sidebar. */
+.card h3 .legend { font-size: 10px; color: var(--dim); text-transform: none; letter-spacing: 0; font-weight: 400; }
+#timeline-scroll { flex: 1; min-height: 0; overflow: auto; }
+#timeline-svg { display: block; }
+#timeline-empty { color: var(--dim); font-style: italic; padding: 8px 0; }
+.tl-grid { stroke: #2a3540; stroke-width: 1; }
+.tl-axis { fill: var(--dim); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.tl-label { fill: var(--fg); font: 11px system-ui, sans-serif; }
+.tl-span { cursor: pointer; opacity: 0.9; }
+.tl-span:hover { opacity: 1; stroke: var(--accent); stroke-width: 1.5; }
+.tl-marker { fill: var(--accent); cursor: pointer; stroke: #0c1014; stroke-width: 1; }
+.tl-marker:hover { fill: var(--fg); }
+
+/* Hazard marker controls (Phase 4) */
+#btn-hazard-marker.on { background: var(--chip-on); border-color: var(--irrationell); color: var(--irrationell); }
 
 button:not(.chip) {
   background: var(--chip); color: var(--fg);

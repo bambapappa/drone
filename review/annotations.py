@@ -44,6 +44,18 @@ Phase 3 adds two more kinds (without restructuring this module):
   - operator_notes: imported field notes (one row = one entity, tombstone to
                     delete a bad import line), same shape as bookmarks.
 
+Phase 4 adds one more kind:
+  - hazard_marker:  the reviewer's manually placed/moved danger point for
+                    retroactive MOT_FARA recompute (report §5.1). Like
+                    verdicts, this is a single evolving value with a full
+                    history, not a set of independently deletable entities —
+                    every placement (or explicit clear) appends a full row;
+                    the read side reduces to the latest row (see
+                    `get_hazard_marker`). Unlike verdicts there is no key
+                    (only one marker exists per run at a time). Recompute
+                    itself lives in review/hazard.py, not here — this module
+                    only stores the marker's position.
+
 Identity corrections (split/merge person_id) remain a later phase — not
 implemented here.
 """
@@ -60,11 +72,13 @@ BOOKMARKS = "bookmarks"
 SCREENSHOTS = "screenshots"
 VERDICTS = "verdicts"
 OPERATOR_NOTES = "operator_notes"
+HAZARD_MARKER = "hazard_marker"
 # Entity-per-row kinds: one row = one thing, tombstone-deletable, exactly
-# like bookmarks/screenshots. Verdicts are NOT in this set — they are keyed
-# by event_id with latest-row-wins semantics instead (see `all_verdicts`).
+# like bookmarks/screenshots. Verdicts and hazard_marker are NOT in this set
+# — they are single evolving values with latest-row-wins semantics instead
+# (see `all_verdicts` / `get_hazard_marker`).
 ENTITY_KINDS = (BOOKMARKS, SCREENSHOTS, OPERATOR_NOTES)
-ALL_KINDS = (BOOKMARKS, SCREENSHOTS, VERDICTS, OPERATOR_NOTES)
+ALL_KINDS = (BOOKMARKS, SCREENSHOTS, VERDICTS, OPERATOR_NOTES, HAZARD_MARKER)
 
 REVIEW_STATES = ("unreviewed", "confirmed", "rejected")
 
@@ -314,6 +328,35 @@ class AnnotationStore:
             return False
         self._append_tombstone(OPERATOR_NOTES, annotation_id)
         return True
+
+    # ---- hazard marker (Phase 4 retroactive MOT_FARA recompute) ----
+
+    def set_hazard_marker(self, x: float, y: float, note: str | None = None) -> dict[str, Any]:
+        """Place/move the reviewer's hazard marker. `x`/`y` are frame-pixel
+        coordinates — the same space the overlay canvas already draws
+        tracklet boxes in (see review/static/app.js), so a click on the
+        canvas maps straight through with no conversion. Every placement
+        appends a full row (never rewritten), mirroring set_verdict's
+        audit-trail discipline; the read side reduces to the latest row."""
+        return self._append(HAZARD_MARKER, {"x": round(float(x), 1), "y": round(float(y), 1), "note": note})
+
+    def clear_hazard_marker(self) -> dict[str, Any]:
+        """Remove the manual override — MOT_FARA falls back to the engine's
+        own time-weighted-mean danger point. Recorded as an explicit
+        x=None/y=None row rather than a tombstone, since hazard_marker has
+        no per-row id to tombstone (see get_hazard_marker)."""
+        return self._append(HAZARD_MARKER, {"x": None, "y": None, "note": None})
+
+    def get_hazard_marker(self) -> dict[str, Any] | None:
+        """Latest hazard_marker row, or None if never set. A row with
+        x=None (from clear_hazard_marker) is still returned — the caller
+        checks `row["x"] is not None` to know whether an override is active,
+        so a cleared marker doesn't fall through to a stale earlier
+        position."""
+        latest: dict[str, Any] | None = None
+        for row in self._iter_raw(HAZARD_MARKER):
+            latest = row
+        return latest
 
     # ---- bulk read for the UI ----
 

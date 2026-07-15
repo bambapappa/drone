@@ -423,6 +423,93 @@ async def test_review_unknown_event_404(settings, run_id, client):
     assert r.status_code == 404
 
 
+# ---- Phase 4: retroactive hazard marker ----
+
+
+@pytest.fixture
+def moving_run_id(settings: ReviewSettings) -> str:
+    """A run with one tracklet moving steadily in +x — no MOT_FARA in the
+    engine's own P5 output (no hazard was ever detected), so any MOT_FARA
+    seen after placing a marker must come from the recompute path."""
+    store = ArtifactStore(str(settings.output_dir), "vh-moving", "ch-moving")
+    store.create()
+    store.set_video_filename("film.mp4")
+    store.record_pass_start(OfflineOrchestrator.P1_PASS_NAME, {"fps": 10.0})
+    store.record_pass_complete(OfflineOrchestrator.P1_PASS_NAME, {})
+    store.record_pass_start(OfflineOrchestrator.P2_PASS_NAME, {})
+    store.start_fresh_pass_output("tracklets", OfflineOrchestrator.P2_PASS_NAME)
+    for i in range(80):
+        x = 50.0 + i * 4.0
+        store.add_tracklet_frame(
+            OfflineOrchestrator.P2_PASS_NAME,
+            tracklet_id=1,
+            frame_no=i,
+            det_id=i,
+            data={"cls": "person", "conf": 0.9, "xyxy": [x, 100.0, x + 30.0, 180.0]},
+        )
+    store.record_pass_complete(OfflineOrchestrator.P2_PASS_NAME, {"total_tracklet_rows": 80})
+    store.record_pass_start(OfflineOrchestrator.P5_PASS_NAME, {"config": {}})
+    store.start_fresh_pass_output("events", OfflineOrchestrator.P5_PASS_NAME)
+    store.record_pass_complete(OfflineOrchestrator.P5_PASS_NAME, {"events_out": 0, "by_category": {}})
+    store.close()
+    return store.run_id
+
+
+async def test_hazard_marker_inactive_by_default(settings, moving_run_id, client):
+    r = await client.get(f"/api/runs/{moving_run_id}/hazard-marker")
+    assert r.status_code == 200
+    assert r.json() == {"active": False}
+
+
+async def test_placing_hazard_marker_recomputes_mot_fara(settings, moving_run_id, client):
+    # No MOT_FARA before the marker is placed (P5 emitted zero events).
+    r = await client.get(f"/api/runs/{moving_run_id}/events")
+    assert r.json()["count"] == 0
+
+    r = await client.post(
+        f"/api/runs/{moving_run_id}/hazard-marker",
+        data={"x": "2000", "y": "140"},
+    )
+    assert r.status_code == 201
+    assert r.json()["x"] == 2000.0
+
+    r = await client.get(f"/api/runs/{moving_run_id}/hazard-marker")
+    assert r.json() == {"active": True, "x": 2000.0, "y": 140.0, "note": None}
+
+    r = await client.get(f"/api/runs/{moving_run_id}/events")
+    body = r.json()
+    assert body["count"] >= 1
+    assert all(e["category"] == "MOT_FARA" for e in body["events"])
+
+
+async def test_clearing_hazard_marker_reverts_to_engine_output(settings, moving_run_id, client):
+    await client.post(f"/api/runs/{moving_run_id}/hazard-marker", data={"x": "2000", "y": "140"})
+    r = await client.get(f"/api/runs/{moving_run_id}/events")
+    assert r.json()["count"] >= 1
+
+    r = await client.delete(f"/api/runs/{moving_run_id}/hazard-marker")
+    assert r.status_code == 200
+    assert r.json() == {"active": False}
+
+    r = await client.get(f"/api/runs/{moving_run_id}/hazard-marker")
+    assert r.json() == {"active": False}
+    r = await client.get(f"/api/runs/{moving_run_id}/events")
+    assert r.json()["count"] == 0
+
+
+async def test_moving_marker_twice_to_same_position_is_deterministic(settings, moving_run_id, client):
+    async def events_snapshot():
+        r = await client.get(f"/api/runs/{moving_run_id}/events")
+        return r.json()["events"]
+
+    await client.post(f"/api/runs/{moving_run_id}/hazard-marker", data={"x": "2000", "y": "140"})
+    first = await events_snapshot()
+    await client.post(f"/api/runs/{moving_run_id}/hazard-marker", data={"x": "-500", "y": "400"})
+    await client.post(f"/api/runs/{moving_run_id}/hazard-marker", data={"x": "2000", "y": "140"})
+    back = await events_snapshot()
+    assert first == back
+
+
 async def test_review_invalid_state_422(settings, run_id, client):
     r = await client.post(f"/api/runs/{run_id}/events/stilla-000001/review", data={"state": "maybe"})
     assert r.status_code == 422

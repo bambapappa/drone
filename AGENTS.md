@@ -204,8 +204,14 @@ capability (§5.1). Duplicating the behavior math in `review/` instead would
 have violated a more concrete instruction (reuse the same substrate
 STILLA/MOT_FARA use). The recomputed MOT_FARA never touches
 `events/<pass>.jsonl`; `review/routes.py:_apply_hazard_override` merges it
-in at read time, exactly like Phase 3's verdict overlay. Full reasoning:
-DECISIONS.md B26.
+in at read time, exactly like Phase 3's verdict overlay. Moving the marker
+best-effort carries forward any existing Phase 3 verdict from the original
+MOT_FARA event onto its recomputed replacement
+(`_carry_forward_mot_fara_reviews`, keyed by `evidence.tracklet_id` — not
+`person_id`, which is null on every MOT_FARA event whenever P3 didn't run
+and would collapse distinct people into one bucket), matched by
+overlapping/closest time span since MOT_FARA event ids and spans are not
+stable across marker positions. Full reasoning: DECISIONS.md B26.
 
 **Timeline strip (`review/static/app.js:renderTimeline`).** A sidebar tab
 rendering an SVG strip — one lane per person (STILLA/MOT_FARA/IRRATIONELL

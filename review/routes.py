@@ -37,7 +37,9 @@ Three groups of endpoints, mirroring the architecture report's interface rule
     When a marker is active, GET .../events (and .../comparison, .../debrief)
     transparently serve MOT_FARA recomputed against it (review/hazard.py) —
     events/<pass>.jsonl is never rewritten, exactly like Phase 3's verdicts
-    overlay.
+    overlay. Existing Phase 3 verdicts on the original MOT_FARA events are
+    best-effort carried forward onto the recomputed ones
+    (_carry_forward_mot_fara_reviews), keyed by tracklet_id + time proximity.
 
 Path traversal guards: run_id and annotation_id are validated strictly
 (alphanumeric + dash/underscore) before touching the filesystem — the

@@ -175,7 +175,11 @@ att återanvända en redan ren, redan artefakt-baserad härledningsfunktion
 — exakt den distinktion rapportens §6 drar ("allt som kan uttryckas som en
 fråga mot artefakten är billigt"). Den omräknade MOT FARA-mängden rör
 aldrig `events/<pass>.jsonl`; den slås ihop vid läsning precis som
-verdikter (`review/routes.py:_apply_hazard_override`). Faromarkörens
+verdikter (`review/routes.py:_apply_hazard_override`). Att flytta markören
+carry:ar best-effort fram en tidigare avgiven Fas 3-verdikt från den
+ursprungliga MOT FARA-händelsen till dess omräknade motsvarighet
+(`_carry_forward_mot_fara_reviews`, nyckelad på tracklet_id + tidsnärhet —
+inte person_id, som är null när P3 inte kördes). Faromarkörens
 position lagras i `annotations/hazard_marker.jsonl` (senaste-rad-vinner,
 som verdikter). Se DECISIONS.md B26 för fullständigt resonemang.
 

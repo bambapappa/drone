@@ -157,23 +157,27 @@ def _carry_forward_mot_fara_reviews(
 
     MOT_FARA event ids and spans are not stable across different hazard
     marker positions, so this cannot be an exact identity match — it matches
-    by person_id plus closest/overlapping time span, which is the best
-    available signal since a person's MOT_FARA span usually only shifts
-    slightly when the danger point moves. Only original events carrying a
-    non-default verdict (state != "unreviewed" or a note) are considered, so
-    an untouched recomputed event keeps its default unreviewed review field.
+    by tracklet_id plus closest/overlapping time span, which is the best
+    available signal since a tracklet's MOT_FARA span usually only shifts
+    slightly when the danger point moves. tracklet_id (not person_id) is the
+    matching key because person_id is None on every MOT_FARA event whenever
+    P3 didn't run, which would collapse distinct people into one bucket and
+    risk carrying one person's verdict onto another's recomputed event.
+    Only original events carrying a non-default verdict (state !=
+    "unreviewed" or a note) are considered, so an untouched recomputed event
+    keeps its default unreviewed review field.
     """
-    by_person: dict[Any, list[dict[str, Any]]] = {}
+    by_tracklet: dict[Any, list[dict[str, Any]]] = {}
     for ev in original:
         review = ev.get("review") or {}
         if review.get("state", "unreviewed") == "unreviewed" and not review.get("note"):
             continue
-        by_person.setdefault(ev.get("person_id"), []).append(ev)
-    if not by_person:
+        by_tracklet.setdefault(ev.get("evidence", {}).get("tracklet_id"), []).append(ev)
+    if not by_tracklet:
         return recomputed
     result = []
     for ev in recomputed:
-        candidates = by_person.get(ev.get("person_id"))
+        candidates = by_tracklet.get(ev.get("evidence", {}).get("tracklet_id"))
         if candidates:
             match = _best_review_match(ev, candidates)
             ev = dict(ev)

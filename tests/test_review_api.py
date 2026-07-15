@@ -625,6 +625,60 @@ async def test_verdict_survives_hazard_marker_move_to_different_event_id(
     assert person2_event_b["review"]["reviewer"] == "Anna"
 
 
+def test_carry_forward_mot_fara_reviews_keys_by_tracklet_not_person():
+    """When P3 didn't run, every MOT_FARA event's person_id is None. Grouping
+    verdict carry-forward by person_id would collapse two distinct tracklets'
+    reviewed events into the same bucket and risk attaching one tracklet's
+    verdict to the other's recomputed event. This reproduces that scenario
+    with two tracklets (both person_id=None) whose original verdicts are
+    closer in time to each other's *other* tracklet's recomputed event than
+    to their own, so a naive nearest-in-time-only match would misattribute."""
+    from review.routes import _carry_forward_mot_fara_reviews
+
+    original = [
+        {
+            "event_id": "mot_fara-000000",
+            "person_id": None,
+            "t_start": 10.0,
+            "t_end": 12.0,
+            "evidence": {"tracklet_id": 1},
+            "review": {"state": "confirmed", "reviewer": "Anna", "note": None},
+        },
+        {
+            "event_id": "mot_fara-000001",
+            "person_id": None,
+            "t_start": 4.5,
+            "t_end": 7.9,
+            "evidence": {"tracklet_id": 2},
+            "review": {"state": "rejected", "reviewer": "Bob", "note": None},
+        },
+    ]
+    recomputed = [
+        {
+            "event_id": "mot_fara-000000",
+            "person_id": None,
+            "t_start": 4.6,
+            "t_end": 7.8,
+            "evidence": {"tracklet_id": 1},
+            "review": {"state": "unreviewed"},
+        },
+        {
+            "event_id": "mot_fara-000001",
+            "person_id": None,
+            "t_start": 9.9,
+            "t_end": 12.1,
+            "evidence": {"tracklet_id": 2},
+            "review": {"state": "unreviewed"},
+        },
+    ]
+    result = _carry_forward_mot_fara_reviews(original, recomputed)
+    by_tid = {ev["evidence"]["tracklet_id"]: ev for ev in result}
+    assert by_tid[1]["review"]["state"] == "confirmed"
+    assert by_tid[1]["review"]["reviewer"] == "Anna"
+    assert by_tid[2]["review"]["state"] == "rejected"
+    assert by_tid[2]["review"]["reviewer"] == "Bob"
+
+
 async def test_review_invalid_state_422(settings, run_id, client):
     r = await client.post(f"/api/runs/{run_id}/events/stilla-000001/review", data={"state": "maybe"})
     assert r.status_code == 422

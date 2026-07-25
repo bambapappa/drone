@@ -246,6 +246,42 @@ class TestOperatorNotes:
         assert store.delete_operator_note(a["annotation_id"]) is False
 
 
+class TestIdentityCorrections:
+    def test_merge_row_keeps_tracklet_key_and_provenance(self, store: AnnotationStore):
+        row = store.add_identity_correction(
+            op="merge",
+            person_ids=[2, 1],
+            member_tracklet_ids=[[7, 3], [9]],
+            reason="samma figurant",
+            video_hash="vh",
+            config_hash="ch",
+        )
+        # The tracklet sets are the op's key (sorted for a stable comparison);
+        # person_ids and the hashes ride along as provenance only.
+        assert row["member_tracklet_ids"] == [[3, 7], [9]]
+        assert row["person_ids"] == [2, 1]
+        assert row["video_hash"] == "vh" and row["config_hash"] == "ch"
+        assert store.list_identity_corrections() == [row]
+
+    def test_split_row_keeps_source_tracklet_set(self, store: AnnotationStore):
+        row = store.add_identity_correction(
+            op="split", person_id=4, tracklet_ids=[9], source_tracklet_ids=[9, 5]
+        )
+        assert row["source_tracklet_ids"] == [5, 9]
+        assert row["tracklet_ids"] == [9]
+        assert row["person_id"] == 4
+
+    def test_delete_is_tombstone_undo(self, store: AnnotationStore):
+        row = store.add_identity_correction(op="merge", person_ids=[1, 2], member_tracklet_ids=[[1], [2]])
+        assert store.delete_identity_correction(row["annotation_id"]) is True
+        assert store.list_identity_corrections() == []
+        assert store.delete_identity_correction(row["annotation_id"]) is False
+
+    def test_unknown_op_rejected(self, store: AnnotationStore):
+        with pytest.raises(ValueError):
+            store.add_identity_correction(op="rename")
+
+
 class TestBulk:
     def test_all_annotations_groups_by_kind(self, store: AnnotationStore):
         store.add_bookmark(t=1.0, label="b1")
@@ -270,11 +306,17 @@ class TestBulk:
         a = store.add_bookmark(t=1.0, label="b1")
         store.add_screenshot(t=2.0, label="s1")
         store.add_operator_note(t=3.0, text="n1")
+        store.add_ground_truth(t=4.0, text="facit")
+        store.add_identity_correction(op="merge", person_ids=[1, 2], member_tracklet_ids=[[1], [2]])
         store.delete_bookmark(a["annotation_id"])
         payload = store.export_payload()
         assert payload["bookmarks"] == []
         assert len(payload["screenshots"]) == 1
         assert len(payload["operator_notes"]) == 1
+        # The two bulk readers cover the same kinds — neither may drift.
+        assert set(payload) == set(store.all_annotations())
+        assert len(payload["ground_truth"]) == 1
+        assert len(payload["identity_corrections"]) == 1
 
 
 class TestIsolationFromEngine:

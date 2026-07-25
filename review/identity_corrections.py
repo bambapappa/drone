@@ -24,10 +24,32 @@ RNG or wall-clock is consulted — the same persons table + the same live ops
 always produce the same projected persons, mirroring P3's own determinism
 guarantee.
 
-An op that no longer resolves (its person ids vanished because a re-analysis
-renumbered P3's output, or an earlier op was undone) is *skipped and
-reported*, never guessed at — the caller surfaces skipped ops so the
-reviewer can see that a recorded judgment stopped applying.
+**Ops are keyed by tracklet sets, never by person_id.** P3 assigns
+person_id positionally (`enumerate(surviving, start=1)` in
+analysis/identity.py), so those ids are *not* stable across re-analysis: a
+renumbered run normally still has ids 1..N, meaning a person_id-keyed op
+would resolve and merge the wrong pair — a guess wearing validation's
+clothes. So every op records, at correction time, the FULL tracklet set of
+each person it names (`member_tracklet_ids` for merge, `source_tracklet_ids`
+for split), and replay resolves each named person by locating the person in
+the *current projected state at that step* whose tracklet set equals the
+recorded one. Exactly one match applies; anything else is skipped. The
+`person_ids`/`person_id` fields stay on the row as provenance (what the
+reviewer saw) and are never resolved against, never used as a fallback. The
+run's `video_hash`/`config_hash` are recorded for the same reason —
+diagnosis only, never a replay gate.
+
+**Skip-and-report is the only failure mode**, and now it is honest: an op is
+skipped when a recorded tracklet is absent from this run, when a recorded
+tracklet set no longer matches exactly one person, when the members collapse
+onto the same person, or when the op predates the stable-key schema (old
+rows are never back-filled — synthesising a key from the current persons
+table would invent the very evidence the key exists to check). One benign
+case rides the same channel: when the engine has since associated all the
+merge members' tracklets into one person, the reviewer's judgment is already
+reality, and the op is reported as skipped with that reason rather than
+applied. The caller surfaces skipped ops so the reviewer can see exactly why
+a recorded judgment stopped applying.
 
 Merged/split records are marked `confirmation_state: "manual"` plus
 `corrected: true` so every consumer can tell human-corrected identities from
@@ -47,6 +69,11 @@ from typing import Any
 # Confirmation state for human-corrected person records. English like every
 # internal enum; the UI maps it to a Swedish label ("manuellt korrigerad").
 STATE_MANUAL = "manual"
+
+# Reason for an op recorded before the stable tracklet-set key existed. Such
+# rows carry only positional person ids, which cannot be verified against a
+# re-analysed run — so they are skipped, never guessed at.
+OLD_SCHEMA_REASON = "korrigering saknar tracklet-nyckel (gammalt schema)"
 
 
 @dataclass
@@ -77,14 +104,70 @@ def _span_seconds(
     return min(firsts) / fps, max(lasts) / fps
 
 
+def _tracklet_set(raw: Any) -> set[int] | None:
+    """Normalize a recorded tracklet-set key, or None when the op carries no
+    usable key (missing field, empty list, non-numeric contents)."""
+    if not isinstance(raw, (list, tuple, set)) or not raw:
+        return None
+    try:
+        return {int(t) for t in raw}
+    except (TypeError, ValueError):
+        return None
+
+
+def _person_tracklets(rec: dict[str, Any]) -> set[int]:
+    return {int(t) for t in rec.get("tracklet_ids", [])}
+
+
+def _resolve_by_tracklets(
+    persons: dict[int, dict[str, Any]], want: set[int]
+) -> tuple[int | None, str | None]:
+    """Locate the person in the CURRENT projected state whose tracklet set
+    equals `want`. Returns (person_id, None) on an unambiguous match, else
+    (None, Swedish reason) — the op's own person_id is never consulted."""
+    known = {t for rec in persons.values() for t in _person_tracklets(rec)}
+    absent = sorted(want - known)
+    if absent:
+        return None, f"spår saknas i den här körningen: {absent}"
+    matches = [pid for pid, rec in persons.items() if _person_tracklets(rec) == want]
+    if len(matches) != 1:
+        return None, (
+            f"spåruppsättningen {sorted(want)} motsvarar inte längre exakt en person i den här körningen"
+        )
+    return matches[0], None
+
+
 def _apply_merge(persons: dict[int, dict[str, Any]], op: dict[str, Any]) -> tuple[bool, str | None]:
-    """Merge the op's person ids into the lowest one. Returns (applied, skip_reason)."""
-    ids = sorted({int(p) for p in op.get("person_ids", [])})
-    if len(ids) < 2:
-        return False, "sammanslagning kräver minst två person-id"
-    missing = [p for p in ids if p not in persons]
-    if missing:
-        return False, f"person(er) saknas i aktuell projektion: {missing}"
+    """Merge the op's members (resolved by their recorded tracklet sets) into
+    the lowest surviving person id. Returns (applied, skip_reason)."""
+    raw_keys = op.get("member_tracklet_ids")
+    if not isinstance(raw_keys, list) or len(raw_keys) < 2:
+        return False, OLD_SCHEMA_REASON
+    wants = [_tracklet_set(k) for k in raw_keys]
+    if any(w is None for w in wants):
+        return False, OLD_SCHEMA_REASON
+    if len({frozenset(w) for w in wants}) < 2:
+        return False, "sammanslagning kräver minst två olika personer"
+
+    resolved: list[int] = []
+    failure: str | None = None
+    for want in wants:
+        pid, reason = _resolve_by_tracklets(persons, want)
+        if pid is None:
+            failure = failure or reason
+        else:
+            resolved.append(pid)
+
+    if failure is not None or len(set(resolved)) != len(wants):
+        # The engine may simply have caught up with the reviewer: one person
+        # now holds exactly the union of the members' tracklets. That is the
+        # judgment already being true, reported honestly rather than applied.
+        union = set().union(*wants)
+        if sum(1 for rec in persons.values() if _person_tracklets(rec) == union) == 1:
+            return False, "motorn associerar redan dessa tracklets som en person"
+        return False, failure or "sammanslagningen pekar på samma person mer än en gång"
+
+    ids = sorted(resolved)
     keep_id = ids[0]
     keep = persons[keep_id]
     members = [persons[p] for p in ids]
@@ -124,17 +207,20 @@ def _apply_split(
     tracklet_spans: dict[int, tuple[int, int]] | None,
     fps: float,
 ) -> tuple[bool, str | None]:
-    """Detach the op's tracklets from its person into a new person. Returns
-    (applied, skip_reason)."""
-    pid = op.get("person_id")
-    if pid is None or int(pid) not in persons:
-        return False, f"person {pid} saknas i aktuell projektion"
-    pid = int(pid)
+    """Detach the op's tracklets from its source person (resolved by the
+    source's recorded tracklet set) into a new person. Returns (applied,
+    skip_reason)."""
+    want = _tracklet_set(op.get("source_tracklet_ids"))
+    if want is None:
+        return False, OLD_SCHEMA_REASON
+    pid, reason = _resolve_by_tracklets(persons, want)
+    if pid is None:
+        return False, reason
     detach = sorted({int(t) for t in op.get("tracklet_ids", [])})
     if not detach:
         return False, "delning kräver minst ett tracklet-id"
     source = persons[pid]
-    current = set(source.get("tracklet_ids", []))
+    current = _person_tracklets(source)
     stray = [t for t in detach if t not in current]
     if stray:
         return False, f"tracklet(s) tillhör inte person {pid}: {stray}"
@@ -179,6 +265,12 @@ def apply_corrections(
     tracklet_spans: dict[int, tuple[int, int]] | None = None,
 ) -> ProjectionResult:
     """Replay live correction ops (append order) over the engine's persons.
+
+    Each op names its persons by the tracklet set recorded at correction
+    time, and resolution happens against the state projected SO FAR (engine
+    persons plus every earlier applied op) — not against the engine table,
+    since a split allocates ids that have no engine meaning. Unresolvable
+    ops land in `skipped` with a Swedish reason; nothing is ever guessed.
 
     `tracklet_spans` maps tracklet_id -> (first_frame, last_frame) from P2,
     used to recompute first/last_seen for split results; when absent the

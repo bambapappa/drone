@@ -12,6 +12,12 @@ a separate persistence layer:
   destroyed by a fresh engine run (architecture report §2.4 — annotations
   are a separate log keyed to artifact version).
 
+**Feature toggles never hide recorded human work.** A `FEATURE_*` flag gates
+the WRITE path and the dedicated feature endpoints/UI for a kind; the raw
+append-only annotation log under `GET /annotations` stays readable for EVERY
+kind, always. A toggle is a capability switch, not a retention or visibility
+policy. This holds for every kind below and for every kind added after them.
+
 Implementation: one JSONL file per annotation kind under
 `<run_id>/annotations/`. Each row is either a record or a tombstone
 (`{"action": "delete", "target_id": ...}`) — hard deletes would violate
@@ -394,13 +400,27 @@ class AnnotationStore:
         person_ids: list[int] | None = None,
         person_id: int | None = None,
         tracklet_ids: list[int] | None = None,
+        member_tracklet_ids: list[list[int]] | None = None,
+        source_tracklet_ids: list[int] | None = None,
         reason: str | None = None,
+        video_hash: str | None = None,
+        config_hash: str | None = None,
     ) -> dict[str, Any]:
         """Record one manual identity-correction operation.
 
-        merge: `person_ids` (≥2 projected person ids to unify).
+        merge: `person_ids` (≥2 projected person ids to unify) plus
+        `member_tracklet_ids` — each member's FULL tracklet set as observed
+        at correction time.
         split: `person_id` + `tracklet_ids` (the tracklets to detach into a
-        new person).
+        new person) plus `source_tracklet_ids` — the source person's FULL
+        tracklet set at correction time.
+
+        The tracklet sets are the op's real key: P3's person_id is
+        positional and does not survive a re-analysis, so replay resolves
+        each named person by its recorded tracklet set instead (see
+        review/identity_corrections.py). person_id/person_ids and the
+        `video_hash`/`config_hash` provenance are kept for diagnosis only —
+        never resolved against, never a replay gate.
 
         This method only persists the op — semantic validation (do the
         persons exist, do the tracklets belong) happens in the API layer
@@ -409,17 +429,26 @@ class AnnotationStore:
         storage layer deliberately knows nothing about. The stored row is a
         labeled ground-truth fact ("a human judged these to be the same/
         different people"), so it survives re-analysis like every other
-        annotation; if a later engine run renumbers persons, the projection
-        skips ops that no longer resolve rather than guessing.
+        annotation; an op whose recorded tracklet sets no longer match
+        exactly one person each is skipped and reported, never guessed at.
         """
         if op not in CORRECTION_OPS:
             raise ValueError(f"unknown correction op: {op!r}")
-        row: dict[str, Any] = {"op": op, "reason": reason}
+        row: dict[str, Any] = {
+            "op": op,
+            "reason": reason,
+            "video_hash": video_hash,
+            "config_hash": config_hash,
+        }
         if op == "merge":
             row["person_ids"] = [int(p) for p in (person_ids or [])]
+            row["member_tracklet_ids"] = [
+                sorted(int(t) for t in member) for member in (member_tracklet_ids or [])
+            ]
         else:
             row["person_id"] = int(person_id) if person_id is not None else None
             row["tracklet_ids"] = [int(t) for t in (tracklet_ids or [])]
+            row["source_tracklet_ids"] = sorted(int(t) for t in (source_tracklet_ids or []))
         return self._append(IDENTITY_CORRECTIONS, row)
 
     def list_identity_corrections(self) -> list[dict[str, Any]]:
@@ -465,12 +494,12 @@ class AnnotationStore:
 
     def export_payload(self) -> dict[str, Any]:
         """Snapshot for the JSON/CSV export bundle. The export includes only
-        live entries (tombstones are an internal audit detail)."""
-        return {
-            "bookmarks": self.list_bookmarks(),
-            "screenshots": self.list_screenshots(),
-            "operator_notes": self.list_operator_notes(),
-        }
+        live entries (tombstones are an internal audit detail).
+
+        Enumerated from ENTITY_KINDS, exactly like `all_annotations`, so the
+        two bulk readers cannot drift on what the annotation layer contains
+        when the next kind is added."""
+        return {kind: self._live_rows(kind) for kind in ENTITY_KINDS}
 
     def close(self) -> None:
         """No-op — file-based, nothing to close. Mirrors ArtifactStore.close()

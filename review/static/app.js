@@ -79,6 +79,7 @@ const state = {
   // degrades to showing the controls — the server still 404s disabled ones.
   features: { dossier: true, ground_truth: true, run_compare: true, clip_export: true, heatmap: true },
   persons: [],             // corrected projection from GET /persons
+  personsUniqueCount: 0,   // served unique_count (confirmed + manual, no transients)
   selectedPersonId: null,
   corrections: [],         // live identity-correction ops
   correctionsSkipped: [],  // ops the projection couldn't apply
@@ -91,10 +92,14 @@ const state = {
 // Hide every [data-feature] element whose toggle is off. Server-side the
 // corresponding endpoints 404 too — this is cosmetics over that, not the
 // enforcement.
+// Gating is ADD-ONLY: it never removes `hidden`. Tab panes carry both
+// `hidden` (the tab machinery owns it) and data-feature, so unhiding an
+// enabled pane here would stack every Phase 5 pane in the sidebar until the
+// first tab click.
 function applyFeatureGates() {
   document.querySelectorAll("[data-feature]").forEach((el) => {
     const enabled = !!state.features[el.dataset.feature];
-    el.classList.toggle("hidden", !enabled);
+    if (!enabled) el.classList.add("hidden");
     // If a hidden tab was active, fall back to the events tab.
     if (!enabled && el.classList.contains("tab") && el.classList.contains("on")) {
       const eventsTab = document.querySelector('#sidebar-tabs .tab[data-tab="events"]');
@@ -544,12 +549,17 @@ document.querySelectorAll("#toggles .chip[data-layer]").forEach((btn) => {
   const key = btn.dataset.layer;
   btn.classList.toggle("on", !!state.layers[key]);
   btn.onclick = () => {
-    state.layers[key] = !state.layers[key];
-    btn.classList.toggle("on", state.layers[key]);
-    if (key === "heatmap" && state.layers.heatmap) ensureHeatmap(null);
-    lastDrawnFrame = null; // force redraw
+    setLayer(key, !state.layers[key]);
+    if (key === "heatmap" && state.layers.heatmap) ensureHeatmap(state.heatmap.personId);
   };
 });
+
+function setLayer(key, on) {
+  state.layers[key] = on;
+  const chip = document.querySelector(`#toggles .chip[data-layer="${key}"]`);
+  if (chip) chip.classList.toggle("on", on);
+  lastDrawnFrame = null; // force redraw
+}
 
 // =====================================================================
 // Phase 5: dwell/coverage heatmap layer (report §5.9)
@@ -606,7 +616,39 @@ function drawHeatmapLayer(W, H) {
   ctx.save();
   ctx.imageSmoothingEnabled = true;
   ctx.drawImage(off, 0, 0, W, H);
+  // Always say WHICH map is on screen — a per-person map looks like a
+  // sparse whole-run map otherwise.
+  const pid = state.heatmap.personId;
+  const caption = pid != null ? `Värmekarta: person P${pid}` : "Värmekarta: hela körningen";
+  ctx.font = `bold ${Math.max(11, W / 80)}px system-ui, sans-serif`;
+  ctx.textBaseline = "bottom";
+  const pad = Math.max(6, W / 160);
+  const tw = ctx.measureText(caption).width;
+  const th = Math.max(11, W / 80) + pad;
+  ctx.fillStyle = "rgba(12,16,20,0.72)";
+  ctx.fillRect(pad, H - th - pad, tw + pad * 2, th);
+  ctx.fillStyle = "#e8edf2";
+  ctx.fillText(caption, pad * 2, H - pad * 1.6);
   ctx.restore();
+}
+
+// The dossier's per-person filter: the same /heatmap endpoint with
+// ?person_id=, resolved through the CORRECTED tracklet→person map server
+// side. Clicking again returns to the whole-run map.
+function renderPersonHeatmapControl(pid) {
+  const btn = $("#pd-heatmap-btn");
+  const label = $("#pd-heatmap-state");
+  if (!btn) return;
+  const showing = state.layers.heatmap && state.heatmap.personId === pid;
+  btn.textContent = showing ? "Visa hela körningen" : "Värmekarta för personen";
+  label.textContent = state.layers.heatmap
+    ? (state.heatmap.personId != null ? `visar P${state.heatmap.personId}` : "visar hela körningen")
+    : "";
+  btn.onclick = () => {
+    const toPerson = !(state.layers.heatmap && state.heatmap.personId === pid);
+    setLayer("heatmap", true);
+    ensureHeatmap(toPerson ? pid : null).then(() => renderPersonHeatmapControl(pid));
+  };
 }
 
 // =====================================================================
@@ -1412,6 +1454,7 @@ const PERSON_STATE_LABEL = {
 
 async function refreshPersons() {
   state.persons = [];
+  state.personsUniqueCount = 0;
   state.corrections = [];
   state.correctionsSkipped = [];
   if (state.runId) {
@@ -1423,7 +1466,11 @@ async function refreshPersons() {
         fetch(`/api/runs/${state.runId}/persons`),
         fetch(`/api/runs/${state.runId}/identity-corrections`),
       ]);
-      if (pr.ok) state.persons = (await pr.json()).persons || [];
+      if (pr.ok) {
+        const pj = await pr.json();
+        state.persons = pj.persons || [];
+        state.personsUniqueCount = pj.unique_count ?? 0;
+      }
       if (cr.ok) {
         const j = await cr.json();
         state.corrections = j.corrections || [];
@@ -1474,6 +1521,7 @@ async function selectPerson(pid) {
     <span>Spår: ${p.tracklet_ids.map((t) => `T${t}`).join(", ")}</span>
     <span>Utseendemetod: ${esc(methods)}</span>`;
 
+  renderPersonHeatmapControl(pid);
   renderPersonEvents(pid);
   renderPersonAudit(p);
   renderMergeForm(pid);
@@ -1675,7 +1723,9 @@ async function postCorrection(fields) {
 async function reloadAfterCorrectionChange() {
   // A correction changes the tracklet→person join everywhere: person list,
   // overlay labels (cached per frame), served events' person_id, per-person
-  // heatmap. Drop the caches and re-fetch.
+  // heatmap. Drop the caches and re-fetch, keeping the heatmap filter the
+  // reviewer had chosen when that person still exists.
+  const heatPerson = state.heatmap.personId;
   state.boxesByFrame = null;
   state.heatmap = { canvas: null, loading: false, personId: null };
   const evRes = await fetch(`/api/runs/${state.runId}/events`).then((r) => r.json()).catch(() => null);
@@ -1686,7 +1736,10 @@ async function reloadAfterCorrectionChange() {
   else { state.selectedPersonId = null; $("#person-detail").classList.add("hidden"); }
   renderEvents();
   lastDrawnFrame = null;
-  if (state.layers.heatmap) ensureHeatmap(null);
+  if (state.layers.heatmap) {
+    const stillThere = heatPerson != null && state.persons.some((p) => p.person_id === heatPerson);
+    ensureHeatmap(stillThere ? heatPerson : null);
+  }
 }
 
 function renderCorrections() {
@@ -1936,11 +1989,13 @@ function renderRunCompare(result) {
 
 function updateStats() {
   $("#st-events").querySelector("b").textContent = state.events.length;
-  // Prefer the served (correction-projected) persons count over the engine
-  // stat, so a manual merge/split is reflected in the headline number too.
+  // The headline is "unika personer", so it uses the served unique_count
+  // (confirmed + manually corrected, transients excluded) rather than the
+  // full projected list — a transient track is not an established person.
+  // Falls back to the engine stat only before /persons has loaded.
   const p3 = state.runSummary?.passes?.["p3_identity"];
   $("#st-persons").querySelector("b").textContent = state.persons.length
-    ? state.persons.length
+    ? state.personsUniqueCount
     : (p3?.stats?.confirmed_persons ?? p3?.stats?.persons_out ?? "–");
   $("#st-bookmarks").querySelector("b").textContent = state.bookmarks.length;
 }

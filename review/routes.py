@@ -15,7 +15,9 @@ Three groups of endpoints, mirroring the architecture report's interface rule
     GET  /api/runs/{rid}/export?format=csv|json    — event log export
 
   Annotation writes (human review layer, append-only — report §2.4):
-    GET    /api/runs/{rid}/annotations             — all bookmarks + screenshots
+    GET    /api/runs/{rid}/annotations             — live bookmarks, screenshots,
+                                                     operator_notes, identity_corrections
+                                                     and ground_truth (never toggle-gated)
     POST   /api/runs/{rid}/bookmarks               — add bookmark
     DELETE /api/runs/{rid}/bookmarks/{aid}         — tombstone bookmark
     POST   /api/runs/{rid}/screenshots             — add screenshot (multipart)
@@ -97,7 +99,12 @@ from review.debrief import render_debrief_html
 from review.ground_truth import score_ground_truth
 from review.hazard import recompute_mot_fara
 from review.heatmap import DEFAULT_GRID_W, compute_heatmap
-from review.identity_corrections import ProjectionResult, apply_corrections, merge_overlap_warning
+from review.identity_corrections import (
+    STATE_MANUAL,
+    ProjectionResult,
+    apply_corrections,
+    merge_overlap_warning,
+)
 from review.operator_notes import parse_operator_notes
 from review.run_compare import DEFAULT_RUN_TOLERANCE_S, RunCompareError, compare_runs
 
@@ -175,7 +182,9 @@ def _tracklet_spans(store: ArtifactStore) -> dict[int, tuple[int, int]]:
     return spans
 
 
-def _corrected_projection(store: ArtifactStore, ann: AnnotationStore) -> ProjectionResult:
+def _corrected_projection(
+    store: ArtifactStore, ann: AnnotationStore, *, need_spans: bool = True
+) -> ProjectionResult:
     """The persons table as served to every reader: engine output with live
     identity-correction ops replayed on top (Phase 5, report §3.3-4).
 
@@ -183,10 +192,15 @@ def _corrected_projection(store: ArtifactStore, ann: AnnotationStore) -> Project
     dossier UI and new correction writes, but corrections already recorded
     are human review work and keep applying — a config flag must never
     silently un-correct identities (see review/config.py's docstring).
+
+    `need_spans=False` skips the O(rows) tracklets scan that only feeds a
+    split's recomputed first/last_seen. The tracklet→person map is identical
+    either way, so the per-frame overlay path — which asks for nothing else
+    and runs once per displayed frame — must not pay for it.
     """
     persons = _engine_persons(store)
     ops = ann.list_identity_corrections()
-    spans = _tracklet_spans(store) if ops else None
+    spans = _tracklet_spans(store) if (ops and need_spans) else None
     return apply_corrections(persons, ops, fps=_run_fps(store), tracklet_spans=spans)
 
 
@@ -196,7 +210,7 @@ def _person_by_tracklet(store: ArtifactStore, ann: AnnotationStore | None = None
     recompute path, and the heatmap so they never drift on how person_id is
     joined."""
     if ann is not None:
-        return _corrected_projection(store, ann).person_by_tracklet
+        return _corrected_projection(store, ann, need_spans=False).person_by_tracklet
     person_by_tracklet: dict[int, int] = {}
     for p in _engine_persons(store):
         for tid in p.get("tracklet_ids", []):
@@ -402,8 +416,8 @@ def _merged_events(settings: ReviewSettings, run_id: str) -> tuple[ArtifactStore
     verdicts = ann.all_verdicts()
     events = [_merge_verdict(ev, verdicts.get(ev["event_id"])) for ev in store.iter_events(p5)]
     # One projection serves both the hazard recompute's person join and the
-    # Phase 5 person remap below.
-    projection = _corrected_projection(store, ann)
+    # Phase 5 person remap below — both read the map only, never the spans.
+    projection = _corrected_projection(store, ann, need_spans=False)
     events = _apply_hazard_override(events, store, ann, projection.person_by_tracklet)
     # Phase 5: follow each event's tracklet to its corrected person identity
     # when split/merge corrections exist (no-op otherwise).
@@ -524,15 +538,26 @@ async def get_persons(run_id: str, settings: ReviewSettings = Depends(get_settin
     Corrected records carry `corrected: true` + `confirmation_state:
     "manual"` so a consumer can always tell human-corrected identities from
     engine output; ops that no longer resolve are reported in `skipped`
-    rather than silently dropped."""
+    rather than silently dropped.
+
+    Two counts, deliberately distinct:
+      `count`        — every projected person row, transient ones included.
+      `unique_count` — the honest unique-person headline: rows whose
+                       confirmation_state is `confirmed` or `manual`
+                       (transient excluded). This is NOT the engine's
+                       p3.stats.confirmed_persons, which predates the
+                       corrections layer and knows nothing of `manual`.
+    """
     store = _open_store(settings, run_id)
     p3 = OfflineOrchestrator.P3_PASS_NAME
     if store.manifest.get("passes", {}).get(p3, {}).get("status") != "complete":
         raise HTTPException(status_code=409, detail="P3 har inte körts")
     projection = _corrected_projection(store, _annotation_store(settings, run_id))
+    non_transient = ("confirmed", STATE_MANUAL)
     return {
         "persons": projection.persons,
         "count": len(projection.persons),
+        "unique_count": sum(1 for p in projection.persons if p.get("confirmation_state") in non_transient),
         "corrections_applied": len(projection.applied),
         "corrections_skipped": projection.skipped,
     }
@@ -652,7 +677,12 @@ def _annotation_store(settings: ReviewSettings, run_id: str) -> AnnotationStore:
 
 @router.get("/runs/{run_id}/annotations")
 async def get_annotations(run_id: str, settings: ReviewSettings = Depends(get_settings)) -> dict[str, Any]:
-    """All live bookmarks + screenshots for the run."""
+    """All live entity-per-row annotations for the run, grouped by kind:
+    bookmarks, screenshots, operator_notes, identity_corrections and
+    ground_truth. Every kind stays readable here regardless of feature
+    toggles (see review/annotations.py's module docstring). Verdicts and the
+    hazard marker are latest-row-wins values rather than entities and are
+    served through their own endpoints (`.../events`, `.../hazard-marker`)."""
     return _annotation_store(settings, run_id).all_annotations()
 
 
@@ -898,7 +928,7 @@ async def get_identity_corrections(
     flag never hides recorded human work."""
     store = _open_store(settings, run_id)
     ann = _annotation_store(settings, run_id)
-    projection = _corrected_projection(store, ann)
+    projection = _corrected_projection(store, ann, need_spans=False)
     return {
         "corrections": ann.list_identity_corrections(),
         "applied": projection.applied,
@@ -917,6 +947,13 @@ async def add_identity_correction(
     settings: ReviewSettings = Depends(get_settings),
 ) -> dict[str, Any]:
     """Record one manual split/merge correction (Phase 5, report §3.3-4).
+
+    The op is keyed by the TRACKLET SETS of the persons it names, captured
+    here from the current projection — person_id is positional in P3's
+    output and would silently resolve to a different person after a
+    re-analysis (see review/identity_corrections.py). The submitted ids are
+    still stored, as provenance, together with the run's video_hash and
+    config_hash so a later skip is diagnosable.
 
     Validated by DRY-RUNNING the op on top of the current projection (engine
     persons + every earlier live op): an op that wouldn't apply is rejected
@@ -939,38 +976,55 @@ async def add_identity_correction(
 
     if op not in ("merge", "split"):
         raise HTTPException(status_code=422, detail=f"okänd operation: {op!r}")
-    candidate: dict[str, Any] = {"annotation_id": "__candidate__", "op": op, "reason": reason}
-    if op == "merge":
-        candidate["person_ids"] = parse_ids(person_ids)
-    else:
-        candidate["person_id"] = person_id
-        candidate["tracklet_ids"] = parse_ids(tracklet_ids)
 
     ann = _annotation_store(settings, run_id)
     ops = ann.list_identity_corrections()
     spans = _tracklet_spans(store)
-    dry = apply_corrections(
-        _engine_persons(store), ops + [candidate], fps=_run_fps(store), tracklet_spans=spans
-    )
+    engine_persons = _engine_persons(store)
+    # The state the correction acts on: engine persons + every earlier live
+    # op. Both the tracklet-set keys and the overlap warning read from it.
+    before = apply_corrections(engine_persons, ops, fps=_run_fps(store), tracklet_spans=spans)
+    projected = {int(p["person_id"]): p for p in before.persons}
+
+    def tracklet_key(pid: int | None) -> list[int]:
+        rec = projected.get(int(pid)) if pid is not None else None
+        if rec is None:
+            raise HTTPException(status_code=422, detail=f"person {pid} saknas i aktuell projektion")
+        return sorted(int(t) for t in rec.get("tracklet_ids", []))
+
+    candidate: dict[str, Any] = {"annotation_id": "__candidate__", "op": op, "reason": reason}
+    if op == "merge":
+        merge_ids = parse_ids(person_ids)
+        if len(set(merge_ids)) < 2:
+            raise HTTPException(status_code=422, detail="sammanslagning kräver minst två olika person-id")
+        candidate["person_ids"] = merge_ids
+        candidate["member_tracklet_ids"] = [tracklet_key(p) for p in merge_ids]
+    else:
+        if person_id is None:
+            raise HTTPException(status_code=422, detail="delning kräver ett person-id")
+        candidate["person_id"] = person_id
+        candidate["tracklet_ids"] = parse_ids(tracklet_ids)
+        candidate["source_tracklet_ids"] = tracklet_key(person_id)
+
+    dry = apply_corrections(engine_persons, ops + [candidate], fps=_run_fps(store), tracklet_spans=spans)
     rejected = next((s for s in dry.skipped if s["annotation_id"] == "__candidate__"), None)
     if rejected is not None:
         raise HTTPException(status_code=422, detail=rejected["reason"])
 
     warning = None
     if op == "merge":
-        # Warn against the pre-candidate projection — that's the state the
-        # merge actually acts on.
-        before = apply_corrections(_engine_persons(store), ops, fps=_run_fps(store), tracklet_spans=spans)
-        warning = merge_overlap_warning(
-            {p["person_id"]: p for p in before.persons}, candidate["person_ids"], spans
-        )
+        warning = merge_overlap_warning(projected, candidate["person_ids"], spans)
 
     row = ann.add_identity_correction(
         op=op,
         person_ids=candidate.get("person_ids"),
         person_id=candidate.get("person_id"),
         tracklet_ids=candidate.get("tracklet_ids"),
+        member_tracklet_ids=candidate.get("member_tracklet_ids"),
+        source_tracklet_ids=candidate.get("source_tracklet_ids"),
         reason=reason,
+        video_hash=store.manifest.get("video_hash"),
+        config_hash=store.manifest.get("config_hash"),
     )
     return {"correction": row, "warning": warning}
 
@@ -1006,7 +1060,7 @@ async def get_person_trajectory(
     p2 = OfflineOrchestrator.P2_PASS_NAME
     if store.manifest.get("passes", {}).get(p2, {}).get("status") != "complete":
         raise HTTPException(status_code=409, detail="P2 har inte körts")
-    projection = _corrected_projection(store, _annotation_store(settings, run_id))
+    projection = _corrected_projection(store, _annotation_store(settings, run_id), need_spans=False)
     rec = next((p for p in projection.persons if int(p["person_id"]) == person_id), None)
     if rec is None:
         raise HTTPException(status_code=404, detail="okänd person")

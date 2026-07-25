@@ -66,7 +66,7 @@ Sidecar store at `<output>/<run_id>/`:
 - `tracklets/<pass>.jsonl` — P2's per-(track_id, frame) tracker/Kalman-adjusted boxes, referencing back to `det_id`
 - `persons/<pass>.jsonl` — P3's per-identity records: `person_id, tracklet_ids, embedding_centroids, first/last_seen, confirmation_state, assoc_audit`
 - `events/<pass>.jsonl` — P5's per-event records: `event_id, category, person_id|null, t_start, t_end, confidence, evidence, review` (default unreviewed). Categories: STILLA, MOT_FARA, IRRATIONELL (Phase 4), HAZARD.
-- `annotations/{bookmarks,screenshots,verdicts,operator_notes,hazard_marker,identity_corrections,ground_truth}.jsonl` — human review layer. **Append-only log, separate from AI tables** — never mixed into events/, never overwritten by re-analysis. bookmarks/screenshots/operator_notes/identity_corrections/ground_truth are entity-per-row with tombstone soft-delete; `verdicts` and `hazard_marker` are latest-row-wins instead (a verdict is a state-transition history keyed by `event_id`; `hazard_marker` is a single evolving value with no key — only one exists per run) — see `review/annotations.py`'s module docstring, `AnnotationStore.all_verdicts`, `AnnotationStore.get_hazard_marker`. An `identity_corrections` row is one split/merge *operation*; tombstoning it = undo (the read-time projection replays live ops only).
+- `annotations/{bookmarks,screenshots,verdicts,operator_notes,hazard_marker,identity_corrections,ground_truth}.jsonl` — human review layer. **Append-only log, separate from AI tables** — never mixed into events/, never overwritten by re-analysis. bookmarks/screenshots/operator_notes/identity_corrections/ground_truth are entity-per-row with tombstone soft-delete; `verdicts` and `hazard_marker` are latest-row-wins instead (a verdict is a state-transition history keyed by `event_id`; `hazard_marker` is a single evolving value with no key — only one exists per run) — see `review/annotations.py`'s module docstring, `AnnotationStore.all_verdicts`, `AnnotationStore.get_hazard_marker`. An `identity_corrections` row is one split/merge *operation*; tombstoning it = undo (the read-time projection replays live ops only). **Toggles never hide recorded human work:** a `FEATURE_*` flag gates the write path and a kind's dedicated endpoints/UI, but the raw append-only log under `GET /annotations` stays readable for every kind, always — a toggle is a capability switch, not a retention or visibility policy. This holds for every kind added from here on.
 - `annotations/screenshots/<id>.png` — client-composited PNGs (browser does the compositing; the server never renders a frame — report §2.5 dual-renderer fix)
 - `checkpoints/<pass>/` — P1 resumable state only; P2/P3/P5 always re-run in full (cheap, deterministic given P1's output)
 
@@ -250,10 +250,20 @@ hides its tab/button via `GET /api/features`):
   The corrected tracklet→person map flows into `/persons`, the overlay
   join, served events' `person_id` (re-keyed via `evidence.tracklet_id` —
   the same stable key as Phase 4's verdict carry-forward), and the
-  heatmap's person filter. Ops that no longer resolve are skipped and
-  reported, never guessed. Writes are validated by dry-running the
-  projection; merging simultaneously-visible persons is allowed but warned
-  (human may out-rank P3's hard gate, e.g. tracker twin boxes).
+  heatmap's person filter (reachable from the dossier's "Värmekarta för
+  personen" control; the overlay always captions which map is shown).
+  **Every op is keyed by the tracklet SET of each person it names**
+  (`member_tracklet_ids` / `source_tracklet_ids`, captured at write time),
+  because P3's `person_id` is positional and a re-analysis normally
+  reproduces the same ids for different people — resolving by id would
+  silently correct the wrong pair. Replay resolves against the projected
+  state at that step, requires exactly one matching person, and keeps
+  `person_id(s)` + `video_hash`/`config_hash` as provenance only. Anything
+  that doesn't resolve — including old rows without the key, which are
+  never back-filled — is skipped and reported, never guessed. Writes are
+  validated by dry-running the projection; merging simultaneously-visible
+  persons is allowed but warned (human may out-rank P3's hard gate, e.g.
+  tracker twin boxes).
   **Toggle-off asymmetry (deliberate):** `FEATURE_DOSSIER=0` hides the UI
   and blocks new writes, but recorded corrections keep applying and the
   corrections list stays readable — a config flag never hides recorded

@@ -125,6 +125,49 @@ def seed_run(settings: ReviewSettings, video_hash: str = "vh-aaa", tiles: int = 
     return store.run_id
 
 
+def seed_counts_run(settings: ReviewSettings) -> str:
+    """A run whose persons cover every confirmation state the unique-count
+    headline has to distinguish: two confirmed (mergeable into one manual)
+    plus one more confirmed and one transient."""
+    store = ArtifactStore(str(settings.output_dir), "vh-counts", "ch-counts")
+    store.create()
+    store.set_video_filename("film.mp4")
+    store.record_pass_start(P1, {"fps": 10.0, "config": {}, "width": 1000, "height": 500})
+    store.record_pass_complete(P1, {"frames_processed": 4})
+    store.record_pass_start(P2, {})
+    store.start_fresh_pass_output("tracklets", P2)
+    for tid in (1, 2, 3, 4):
+        for fn in range(4):
+            store.add_tracklet_frame(
+                P2, tid, fn, tid * 10 + fn, {"cls": "person", "conf": 0.9, "xyxy": [10.0, 10.0, 40.0, 110.0]}
+            )
+    store.record_pass_complete(P2, {"total_tracklet_rows": 16})
+    store.record_pass_start(P3, {})
+    store.start_fresh_pass_output("persons", P3)
+    for pid, tids, conf_state in (
+        (1, [1], "confirmed"),
+        (2, [2], "confirmed"),
+        (3, [3], "confirmed"),
+        (4, [4], "transient"),
+    ):
+        store.add_person(
+            P3,
+            pid,
+            {
+                "tracklet_ids": tids,
+                "embedding_centroids": {},
+                "embedding_counts": {},
+                "first_seen": 0.0,
+                "last_seen": 0.3,
+                "confirmation_state": conf_state,
+                "assoc_audit": [],
+            },
+        )
+    store.record_pass_complete(P3, {"persons_out": 4, "confirmed_persons": 3})
+    store.close()
+    return store.run_id
+
+
 @pytest.fixture
 def run_id(settings: ReviewSettings) -> str:
     return seed_run(settings)
@@ -283,6 +326,80 @@ async def test_split_creates_new_person_and_remaps_event(settings, run_id, clien
     # The STILLA event rides tracklet 3 → now person 3.
     r = await client.get(f"/api/runs/{run_id}/events")
     assert r.json()["events"][0]["person_id"] == 3
+
+
+async def test_persons_unique_count_excludes_transients(settings, client):
+    """count = every projected row; unique_count = confirmed + manual only.
+
+    The `manual` person is produced by actually REPLAYING a merge op (not by
+    hand-stamping confirmation_state on a fixture row), so the assertion can
+    fail if the keying or the projection breaks.
+    """
+    rid = seed_counts_run(settings)
+    r = await client.get(f"/api/runs/{rid}/persons")
+    body = r.json()
+    assert body["count"] == 4
+    assert body["unique_count"] == 3  # persons 1-3 confirmed, person 4 transient
+
+    r = await client.post(f"/api/runs/{rid}/identity-corrections", data={"op": "merge", "person_ids": "1,2"})
+    assert r.status_code == 201
+
+    body = (await client.get(f"/api/runs/{rid}/persons")).json()
+    states = {p["person_id"]: p["confirmation_state"] for p in body["persons"]}
+    assert states == {1: "manual", 3: "confirmed", 4: "transient"}
+    assert body["count"] == 3
+    assert body["unique_count"] == 2
+
+
+async def test_correction_row_records_tracklet_key_and_provenance(settings, run_id, client):
+    r = await client.post(
+        f"/api/runs/{run_id}/identity-corrections", data={"op": "merge", "person_ids": "1,2"}
+    )
+    row = r.json()["correction"]
+    # The op's real key: each member's full tracklet set at correction time.
+    assert row["member_tracklet_ids"] == [[1, 3], [2]]
+    # person_ids stay as provenance, alongside the run's hashes.
+    assert row["person_ids"] == [1, 2]
+    assert row["video_hash"] == "vh-aaa" and row["config_hash"] == "ch-1"
+
+    r = await client.post(
+        f"/api/runs/{run_id}/identity-corrections",
+        data={"op": "split", "person_id": "1", "tracklet_ids": "3"},
+    )
+    row = r.json()["correction"]
+    assert row["source_tracklet_ids"] == [1, 2, 3]  # the merged person's full set
+    assert row["tracklet_ids"] == [3]
+
+
+async def test_correction_keyed_by_tracklets_not_person_id_after_renumber(settings, run_id, client):
+    """A recorded merge must never land on a different pair of people just
+    because a re-analysis reused the same positional person ids."""
+    r = await client.post(
+        f"/api/runs/{run_id}/identity-corrections", data={"op": "merge", "person_ids": "1,2"}
+    )
+    assert r.status_code == 201
+
+    # Re-analysis: same contiguous ids 1..2, different tracklet grouping.
+    store = ArtifactStore.open_readonly(settings.output_dir / run_id)
+    persons_path = store.run_dir / "persons" / f"{P3}.jsonl"
+    persons_path.write_text(
+        "\n".join(
+            [
+                '{"person_id":1,"tracklet_ids":[1],"embedding_centroids":{},"embedding_counts":{},'
+                '"first_seen":0.0,"last_seen":0.4,"confirmation_state":"confirmed","assoc_audit":[]}',
+                '{"person_id":2,"tracklet_ids":[2,3],"embedding_centroids":{},"embedding_counts":{},'
+                '"first_seen":0.0,"last_seen":0.9,"confirmation_state":"confirmed","assoc_audit":[]}',
+            ]
+        )
+        + "\n"
+    )
+
+    body = (await client.get(f"/api/runs/{run_id}/persons")).json()
+    assert body["corrections_applied"] == 0
+    assert body["count"] == 2
+    assert [p["tracklet_ids"] for p in body["persons"]] == [[1], [2, 3]]
+    assert all(p["confirmation_state"] == "confirmed" for p in body["persons"])
+    assert "motsvarar inte längre exakt en person" in body["corrections_skipped"][0]["reason"]
 
 
 async def test_invalid_correction_rejected_not_persisted(settings, run_id, client):

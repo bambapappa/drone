@@ -1093,11 +1093,7 @@ async function exportClip(eventId) {
   const onTime = () => { if (video.currentTime >= t1) finish(); };
 
   try {
-    await new Promise((resolve) => {
-      const onSeek = () => { video.removeEventListener("seeked", onSeek); resolve(); };
-      video.addEventListener("seeked", onSeek);
-      video.currentTime = t0;
-    });
+    await seekOnce(video, t0);
     compose();
     rec.start(250);
     video.addEventListener("timeupdate", onTime);
@@ -1106,6 +1102,9 @@ async function exportClip(eventId) {
   } catch (_) {
     state.clipRecording = false;
     cancelAnimationFrame(rafId);
+    video.removeEventListener("timeupdate", onTime);
+    video.removeEventListener("ended", finish);
+    if (rec.state !== "inactive") rec.stop();
     toast("Kunde inte starta klippinspelningen", "error");
   }
 }

@@ -494,12 +494,9 @@ class AnnotationStore:
 
     def export_payload(self) -> dict[str, Any]:
         """Snapshot for the JSON/CSV export bundle. The export includes only
-        live entries (tombstones are an internal audit detail).
-
-        Enumerated from ENTITY_KINDS, exactly like `all_annotations`, so the
-        two bulk readers cannot drift on what the annotation layer contains
-        when the next kind is added."""
-        return {kind: self._live_rows(kind) for kind in ENTITY_KINDS}
+        live entries (tombstones are an internal audit detail) — identical to
+        `all_annotations`, kept as a distinct name for export call sites."""
+        return self.all_annotations()
 
     def close(self) -> None:
         """No-op — file-based, nothing to close. Mirrors ArtifactStore.close()

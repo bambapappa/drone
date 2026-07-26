@@ -1199,12 +1199,14 @@ async def get_heatmap(
     if store.manifest.get("passes", {}).get(p2, {}).get("status") != "complete":
         raise HTTPException(status_code=409, detail="P2 har inte körts")
     p1_meta = store.manifest.get("passes", {}).get(OfflineOrchestrator.P1_PASS_NAME, {}).get("meta", {})
-    rows = list(store.iter_tracklets(p2))
     frame_w = int(p1_meta.get("width") or 0)
     frame_h = int(p1_meta.get("height") or 0)
     if frame_w <= 0 or frame_h <= 0:
+        rows = list(store.iter_tracklets(p2))
         frame_w = int(max((float(r["xyxy"][2]) for r in rows), default=0.0)) + 1
         frame_h = int(max((float(r["xyxy"][3]) for r in rows), default=0.0)) + 1
+    else:
+        rows = store.iter_tracklets(p2)
     pmap = _person_by_tracklet(store, _annotation_store(settings, run_id)) if person_id is not None else None
     return compute_heatmap(
         rows,

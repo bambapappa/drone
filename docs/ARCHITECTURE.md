@@ -189,3 +189,24 @@ spann), en rad för farhändelser, en för bokmärken och en för importerade
 operatörsanteckningar — klick söker videon dit. Ren klientlogik över
 samma data som redan hämtas för händelselistan; inget nytt REST-anrop
 utöver det befintliga `/events`.
+
+### Bonusfunktioner bakom egna flaggor + användarhandledning (fas 5)
+
+Fem lös­kopplade tillägg (rapportens §5.5–5.9), vart och ett bakom en egen
+miljövariabel (`FEATURE_DOSSIER`, `FEATURE_GROUND_TRUTH`,
+`FEATURE_RUN_COMPARE`, `FEATURE_CLIP_EXPORT`, `FEATURE_HEATMAP` — alla
+default på, oberoende av varandra; se [CONFIG.md](CONFIG.md)):
+
+| Fil | Ansvar |
+|---|---|
+| `review/identity_corrections.py` | Spelar upp manuella dela/slå ihop-operationer (`annotations/identity_corrections.jsonl`) över P3:s personer vid läsning. `persons/` skrivs aldrig om — en korrigering är märkt facit (framtida träningsdata), inte en redigering av motorns utdata. Tombstone = ångra. |
+| `review/ground_truth.py` | Poängsätter både AI-händelser och operatörsanteckningar mot övningsledarens facit (`annotations/ground_truth.jsonl`, samma radformat och parser som operatörsanteckningarna). Enbart tidsnärhet, via delade `greedy_time_match`. Inget persisteras. |
+| `review/run_compare.py` | Diffar två färdiga körningar av samma film (video_hash-tvång): konfigurationsskillnader ur manifesten, passstatistik, per-kategori-händelsehinkar. Batch — nya körningar produceras alltid via `analyze`-CLI:t; även körbar headless (`python -m review.run_compare`). |
+| `review/heatmap.py` | Uppehållstid per rutnätscell över P2:s tracklets (fotpunkten). Råa bildkoordinater — stab-offsets persisteras inte (samma dokumenterade lucka som P3-porten, B23). |
+| (klientsidigt) | Klippexport: `canvas.captureStream` + `MediaRecorder` över samma video+overlay-komposit som skärmdumparna → WebM. Ingen server-renderare (dubbel-renderare-regeln §2.5). |
+
+Användarhandledningen (`review/static/guide.html`, `/guide`) är en
+fristående svensk sida som täcker hela verktyget för en förstagångs-
+användare; den står aldrig bakom någon flagga och markerar själv avstängda
+funktioner via `GET /api/features`. Fullständigt resonemang i DECISIONS.md
+B27.

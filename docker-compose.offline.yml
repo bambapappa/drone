@@ -45,6 +45,14 @@ services:
       - ANALYSIS_OUTPUT_DIR=/analysis-output
       - VIDEO_DIR=/videos
       - PYTHONPATH=/app
+      # Phase 5 feature toggles — set any of these to 0 (e.g. in a .env file
+      # next to docker-compose.yml) to switch that feature off without a
+      # code change. Each is independent; all default on. See review/config.py.
+      - FEATURE_DOSSIER=${FEATURE_DOSSIER:-1}
+      - FEATURE_GROUND_TRUTH=${FEATURE_GROUND_TRUTH:-1}
+      - FEATURE_RUN_COMPARE=${FEATURE_RUN_COMPARE:-1}
+      - FEATURE_CLIP_EXPORT=${FEATURE_CLIP_EXPORT:-1}
+      - FEATURE_HEATMAP=${FEATURE_HEATMAP:-1}
     ports:
       - "8001:8000"  # host 8001 → container 8000 (avoids clashing with the realtime api on 8000)
     volumes:

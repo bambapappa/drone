@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="sv">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0c1014">
+  <title>Användarhandledning · Drönare Granskning</title>
+  <style>
+    :root {
+      --bg: #0c1014; --bg2: #141a21; --fg: #e8edf2; --dim: #7c8a99;
+      --accent: #34c3ff; --ok: #2ecc71; --warn: #ffa502; --danger: #ff4757;
+      --chip: #1d2630; --irrationell: #a55eea; --fire: #ff6b35;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg); color: var(--fg);
+      font: 15px/1.65 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      max-width: 860px; margin: 0 auto; padding: 28px 20px 80px;
+    }
+    header { border-bottom: 2px solid var(--accent); padding-bottom: 14px; margin-bottom: 24px; }
+    h1 { font-size: 26px; margin-bottom: 6px; }
+    h1 small { display: block; color: var(--dim); font-size: 14px; font-weight: 400; }
+    h2 { font-size: 19px; margin: 34px 0 10px; color: var(--accent); }
+    h3 { font-size: 15px; margin: 18px 0 6px; }
+    p, ul, ol, table { margin-bottom: 10px; }
+    ul, ol { padding-left: 22px; }
+    li { margin-bottom: 4px; }
+    a { color: var(--accent); }
+    code, pre {
+      background: var(--chip); border-radius: 5px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px;
+    }
+    code { padding: 1px 6px; }
+    pre { padding: 10px 12px; overflow-x: auto; margin-bottom: 10px; line-height: 1.5; }
+    table { border-collapse: collapse; width: 100%; font-size: 13px; }
+    th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid #2a3540; vertical-align: top; }
+    th { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .5px; }
+    .tag { display: inline-block; padding: 1px 8px; border-radius: 4px; font-weight: 700; font-size: 12px; }
+    .tag.stilla { background: #5c1119; color: var(--danger); }
+    .tag.motfara { background: #5a3a00; color: var(--warn); }
+    .tag.irr { background: #33184a; color: var(--irrationell); }
+    .tag.fara { background: #3a1d10; color: var(--fire); }
+    .note {
+      background: var(--bg2); border-left: 3px solid var(--accent);
+      padding: 10px 14px; border-radius: 0 6px 6px 0; margin: 10px 0; font-size: 14px;
+    }
+    .note.warn { border-left-color: var(--warn); }
+    .feature-off {
+      display: none; background: #4a1015; color: var(--danger);
+      padding: 1px 8px; border-radius: 4px; font-size: 11px; font-weight: 700;
+      vertical-align: middle; margin-left: 8px;
+    }
+    nav.toc { background: var(--bg2); border-radius: 8px; padding: 14px 18px; margin-bottom: 8px; }
+    nav.toc ol { margin: 0; }
+    .kbd { border: 1px solid #2a3540; border-radius: 4px; padding: 0 5px; font-size: 12px; background: var(--chip); }
+    footer { margin-top: 40px; color: var(--dim); font-size: 12px; border-top: 1px solid #2a3540; padding-top: 12px; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>Användarhandledning<small>Drönarverktyget för granskning av övningsfilm — steg för steg</small></h1>
+</header>
+
+<nav class="toc">
+  <ol>
+    <li><a href="#vad">Vad verktyget gör</a></li>
+    <li><a href="#analysera">Analysera en film</a></li>
+    <li><a href="#oppna">Öppna en körning</a></li>
+    <li><a href="#videovyn">Videovyn och lagren</a></li>
+    <li><a href="#kategorier">Flaggkategorierna</a></li>
+    <li><a href="#tidslinjen">Tidslinjen</a></li>
+    <li><a href="#granskning">Granska händelser (bekräfta/avvisa)</a></li>
+    <li><a href="#bokmarken">Bokmärken och skärmdumpar</a></li>
+    <li><a href="#operator">Operatörens anteckningar och jämförelsen</a></li>
+    <li><a href="#faromarkor">Faromarkören</a></li>
+    <li><a href="#personer">Personer och identitetskorrigering</a></li>
+    <li><a href="#facit">Facit</a></li>
+    <li><a href="#korningar">Jämföra två körningar</a></li>
+    <li><a href="#klipp">Exportera videoklipp</a></li>
+    <li><a href="#varmekarta">Värmekartan</a></li>
+    <li><a href="#funktioner">Slå av och på funktioner</a></li>
+  </ol>
+</nav>
+
+<h2 id="vad">1. Vad verktyget gör</h2>
+<p>Verktyget analyserar en <strong>inspelad övningsfilm</strong> från drönare i efterhand och tar den
+tid som behövs för att göra det grundligt — det är inget realtidsverktyg. Resultatet är en
+<strong>händelselogg</strong>: tidpunkter där AI:n bedömer att någon legat stilla länge, rört sig mot en fara,
+betett sig avvikande, eller där eld/rök dykt upp. En människa granskar sedan loggen mot videon och
+avgör vad som stämmer.</p>
+<p>Allt AI:n flaggar är <strong>förslag</strong>, inte facit. Verktygets uppgift är att hjälpa er se om AI:n
+hittar sådant en operatör missar (och tvärtom) — inte att döma själv.</p>
+
+<h2 id="analysera">2. Analysera en film</h2>
+<p>Analysen körs från terminalen, inte från webbsidan (den kan ta timmar för en lång film och ska
+kunna stå och arbeta ostört):</p>
+<ol>
+  <li>Lägg filmfilen i katalogen <code>videos/</code> i projektmappen.</li>
+  <li>Kör:
+    <pre>docker compose -f docker-compose.yml -f docker-compose.offline.yml run --rm analyze /videos/film.mp4</pre>
+  </li>
+  <li>Vänta tills kommandot är klart. Resultatet hamnar i <code>analysis-output/</code> med ett
+    körnings-ID (t.ex. <code>a1b2c3d4e5f6</code>).</li>
+</ol>
+<p>Vanliga tillval: <code>--tiles 2</code> (hittar mindre/avlägsna personer, tar längre tid),
+<code>--imgsz 1280</code> (högre analysupplösning), <code>--model /models/visdrone.pt</code> (annan modell).</p>
+<div class="note">Samma film + samma inställningar ger alltid exakt samma resultat — en omkörning
+ändrar ingenting av sig själv, och era bokmärken/bedömningar skrivs aldrig över av en ny analys.</div>
+
+<h2 id="oppna">3. Öppna en körning</h2>
+<ol>
+  <li>Starta granskningsvyn: <pre>docker compose -f docker-compose.yml -f docker-compose.offline.yml up review</pre></li>
+  <li>Öppna <code>http://localhost:8001</code> i webbläsaren.</li>
+  <li>Välj körningen i listan högst upp och tryck <strong>Öppna körning</strong>.</li>
+</ol>
+<p>Videon spelas med webbläsarens vanliga kontroller: spela/pausa, dra i tidslisten för att
+spola, ändra hastighet. Ovanpå videon ritas AI:ns rutor och flaggor.</p>
+
+<h2 id="videovyn">4. Videovyn och lagren</h2>
+<p>Knapparna under videon slår av och på olika lager:</p>
+<table>
+  <tr><th>Lager</th><th>Visar</th></tr>
+  <tr><td><strong>Boxar</strong></td><td>En ruta runt varje person AI:n följer.</td></tr>
+  <tr><td><strong>ID</strong></td><td>Personens nummer (P1, P2 …) — samma person behåller sitt nummer även efter att den varit skymd.</td></tr>
+  <tr><td><strong>Beteende</strong></td><td>Färgmarkering och text när en flagga är aktiv (STILLA, MOT FARA, IRRATIONELLT).</td></tr>
+  <tr><td><strong>Spår</strong></td><td>Personens senaste rörelseväg som en svans efter rutan.</td></tr>
+  <tr><td><strong>Värmekarta</strong></td><td>Var personer uppehållit sig under hela filmen (se <a href="#varmekarta">avsnitt 15</a>).</td></tr>
+</table>
+<p>Längst ned till vänster i bilden visas aktuellt bildrutenummer — bra att anteckna när ni
+diskuterar ett exakt ögonblick.</p>
+
+<h2 id="kategorier">5. Flaggkategorierna</h2>
+<table>
+  <tr><th>Flagga</th><th>Betyder</th></tr>
+  <tr><td><span class="tag stilla">STILLA</span></td><td>Personen har legat/stått nästan helt stilla i flera sekunder — möjligen skadad. Tiden som visas är när AI:n blev säker, den faktiska stillheten började tidigare.</td></tr>
+  <tr><td><span class="tag motfara">MOT FARA</span></td><td>Personen rör sig ihållande mot farans position (upptäckt eld/rök, eller er egen faromarkör — se <a href="#faromarkor">avsnitt 10</a>).</td></tr>
+  <tr><td><span class="tag irr">IRRATIONELLT</span></td><td>Avvikande rörelsemönster: irrande väg, panikspurt, rörelse mot strömmen, fram-och-tillbaka-pendling eller frys-och-rusa. Varje flagga anger vilka signaler som slog till och deras uppmätta värden — aldrig bara ordet.</td></tr>
+  <tr><td><span class="tag fara">FARA</span></td><td>Eld eller rök har upptäckts i bilden.</td></tr>
+</table>
+<div class="note warn">Alla flaggor är förslag från enkla, genomskinliga regler. Barn som leker,
+räddningspersonal som går mot strömmen och hundar kan ge falska utslag — det är därför varje
+händelse granskas av en människa.</div>
+
+<h2 id="tidslinjen">6. Tidslinjen</h2>
+<p>Fliken <strong>Tidslinje</strong> visar hela filmen som en remsa: en rad per person med färgade band
+där flaggor varit aktiva, en rad för eld/rök, en för bokmärken och en för operatörens anteckningar.
+Klicka var som helst på remsan så hoppar videon dit. En 16-minutersfilm överblickas på några sekunder.</p>
+
+<h2 id="granskning">7. Granska händelser (bekräfta/avvisa)</h2>
+<p>Fliken <strong>Granskning</strong> är arbetslistan. Så går ni igenom den:</p>
+<ol>
+  <li>Klicka på en händelse — videon hoppar till 5 sekunder före och pausar automatiskt 5 sekunder
+    efter, så ni ser sammanhanget.</li>
+  <li>Bedöm det ni ser och tryck <strong>Bekräfta</strong> (stämmer) eller <strong>Avvisa</strong> (falskt utslag).
+    <strong>Anteckning</strong> lägger till en fritextkommentar.</li>
+  <li><strong>Nästa ogranskad</strong> tar er direkt till nästa obedömda händelse. Sortera på tid eller
+    konfidens efter behov.</li>
+</ol>
+<p>Bedömningarna sparas separat från AI:ns resultat och överlever en omanalys av filmen. Varje
+ändring loggas — det går alltid att se i efterhand hur en bedömning ändrats.</p>
+
+<h2 id="bokmarken">8. Bokmärken och skärmdumpar</h2>
+<ul>
+  <li><strong>🔖 Bokmärke</strong> sparar aktuell tidpunkt med egen etikett — bra för "titta här igen"
+    eller diskussionspunkter till genomgången.</li>
+  <li><strong>📸 Skärmdump</strong> sparar bilden precis som den ser ut med rutor och flaggor, både i
+    arkivet och som nedladdad fil.</li>
+</ul>
+
+<h2 id="operator">9. Operatörens anteckningar och jämförelsen</h2>
+<p>Under fliken <strong>Operatör</strong> klistrar ni in operatörens fältanteckningar från övningen, en
+rad per observation med tid räknat <strong>från filmens början</strong>:</p>
+<pre>2:10, två personer vid fordonet
+rök vid ladan, 5:45
+14:32 person ligger vid dikeskanten</pre>
+<p>Tid och text får stå i valfri ordning; komma eller semikolon fungerar som avskiljare; en rad som
+inte går att tolka blir en varning utan att resten går förlorad.</p>
+<p>Jämförelsen visar sedan tre grupper: <strong>hittad av båda</strong> (med tidsskillnad — vem såg det
+först?), <strong>endast AI</strong> och <strong>endast operatör</strong>. <strong>Exportera debrief</strong> laddar ned en
+färdig HTML-rapport som kan öppnas var som helst utan server — den är tänkt som underlag för
+utbildningsgenomgången.</p>
+
+<h2 id="faromarkor">10. Faromarkören</h2>
+<p>MOT FARA-flaggan behöver en faropunkt. Normalt använder AI:n den upptäckta eldens/rökens
+position, men ni kan sätta en egen:</p>
+<ol>
+  <li>Tryck <strong>📍 Faromarkör</strong> och klicka i videobilden där faran fanns.</li>
+  <li>Alla MOT FARA-händelser räknas <em>omedelbart</em> om för hela filmen mot den punkten — även
+    för det som hände innan markören sattes. Det är något ett realtidsverktyg aldrig kan göra.</li>
+  <li><strong>✕ Rensa markör</strong> återgår till AI:ns egen faropunkt.</li>
+</ol>
+<div class="note warn">När markören flyttas ändras MOT FARA-händelserna. Verktyget för över era
+redan gjorda bekräfta/avvisa-bedömningar till motsvarande nya händelse så gott det går (samma
+spår, närmaste tidsintervall) — men kontrollera MOT FARA-bedömningarna efter en flytt: en händelse
+som ändrats mycket kan behöva bekräftas på nytt, och en bedömning kan ha hamnat på en händelse vars
+tidsspann förskjutits.</div>
+
+<h2 id="personer">11. Personer och identitetskorrigering <span class="feature-off" data-feature="dossier">AVSTÄNGD I DENNA INSTALLATION</span></h2>
+<p>Fliken <strong>Personer</strong> visar varje unik person AI:n räknat: när den syns, dess händelser,
+små bildutsnitt över tid, rörelsebanan, och <em>varför</em> AI:n slagit ihop olika spår till samma
+person (associationsspåret med likhetsvärden).</p>
+<p>När AI:n räknat fel korrigerar ni direkt i vyn:</p>
+<ul>
+  <li><strong>Slå ihop</strong> — två "personer" är i själva verket samma figurant (t.ex. återkom efter
+    att ha varit skymd och fick nytt nummer).</li>
+  <li><strong>Dela</strong> — ett personnummer blandar ihop två olika figuranter: markera de spår som
+    tillhör den andra personen och dela ut dem.</li>
+</ul>
+<p>Korrigeringar ändrar aldrig AI:ns ursprungsresultat — de sparas som er facit-bedömning ovanpå,
+kan <strong>ångras</strong> i korrigeringsloggen, och blir samtidigt värdefull träningsdata för framtida
+förbättring av AI:n. Personantalet i sidhuvudet, rutornas nummer och händelsernas personkoppling
+följer korrigeringarna direkt. Om två personer syns samtidigt i bild varnar verktyget vid
+sammanslagning — två samtidiga spår är normalt olika personer.</p>
+
+<h2 id="facit">12. Facit <span class="feature-off" data-feature="ground_truth">AVSTÄNGD I DENNA INSTALLATION</span></h2>
+<p>Övningsledaren vet vad som faktiskt hände ("3 figuranter: 1 ligger vid bilen från 0:30 …").
+Under fliken <strong>Facit</strong> skrivs det in som tidsatta rader — samma enkla format som
+operatörsanteckningarna:</p>
+<pre>0:30, figurant 1 lägger sig vid bilen
+2:10, figurant 2 går mot branden
+6:00, rökutveckling startar</pre>
+<p>Verktyget rättar sedan <strong>både</strong> AI:n och operatören mot facit: för varje facitpost visas om
+AI:n hittade den (och hur många sekunder före/efter), och om operatören noterade den. Så blir
+övningen ett träningsinstrument för båda — inte bara en jämförelse AI mot operatör.</p>
+
+<h2 id="korningar">13. Jämföra två körningar <span class="feature-off" data-feature="run_compare">AVSTÄNGD I DENNA INSTALLATION</span></h2>
+<p>Hittar en tyngre inställning mer? Kör analysen två gånger med olika inställningar och jämför:</p>
+<ol>
+  <li>Analysera samma film igen med andra tillval, t.ex. <code>--tiles 2 --imgsz 1280</code>
+    (görs i terminalen — en ny analys tar timmar och startas därför aldrig från webbsidan).</li>
+  <li>Öppna den ena körningen, gå till fliken <strong>Körningar</strong>, välj den andra och tryck
+    <strong>Jämför</strong>.</li>
+</ol>
+<p>Ni ser vilka inställningar som faktiskt skilde (hämtat ur körningarnas egna protokoll), hur
+mycket varje körning hittade (detektioner, personer, händelser), och vilka händelser som är
+gemensamma respektive unika för den ena. Endast körningar av <em>samma videofil</em> kan jämföras.</p>
+
+<h2 id="klipp">14. Exportera videoklipp <span class="feature-off" data-feature="clip_export">AVSTÄNGD I DENNA INSTALLATION</span></h2>
+<p>Knappen <strong>🎬 Klipp</strong> på en händelse spelar in ett videoklipp från 5 sekunder före till
+5 sekunder efter händelsen, <em>med</em> rutor och flaggor inritade — färdigt att visa på
+genomgången.</p>
+<ul>
+  <li>Inspelningen sker i realtid: ett 20-sekundersklipp tar 20 sekunder. Låt fliken vara i fred
+    under tiden.</li>
+  <li>Filen laddas ned i WebM-format, som spelas av moderna webbläsare och de flesta
+    presentationsprogram (t.ex. PowerPoint 2016 och senare, VLC).</li>
+</ul>
+
+<h2 id="varmekarta">15. Värmekartan <span class="feature-off" data-feature="heatmap">AVSTÄNGD I DENNA INSTALLATION</span></h2>
+<p>Lagerknappen <strong>Värmekarta</strong> färglägger bilden efter var personer uppehållit sig under hela
+filmen — blått = kort tid, rött = länge. Användbar vid genomgång av sökmönster: var rörde sig
+folk, vilka ytor blev aldrig besökta?</p>
+<p>Vill ni se en enskild person: öppna personen under fliken <strong>Personer</strong> och tryck
+<strong>Värmekarta för personen</strong> — kartan visar då bara den personens uppehållstid, och knappen
+växlar tillbaka till hela körningen. Texten nere i bildens vänstra hörn talar alltid om vilken av
+de två kartorna som visas.</p>
+<div class="note">Kartan ritas i bildens koordinater. Om drönaren flyttat sig mycket under filmen
+"smetas" kartan ut längs kamerarörelsen — den är som mest rättvisande när drönaren i huvudsak
+hovrat över samma plats.</div>
+
+<h2 id="funktioner">16. Slå av och på funktioner</h2>
+<p>Funktionerna i avsnitt 11–15 kan slås av var för sig av den som driftar verktyget, utan
+kodändring — sätt motsvarande miljövariabel till <code>0</code> (t.ex. i en <code>.env</code>-fil bredvid
+<code>docker-compose.yml</code>) och starta om granskningstjänsten:</p>
+<table>
+  <tr><th>Miljövariabel</th><th>Styr</th><th>Standard</th></tr>
+  <tr><td><code>FEATURE_DOSSIER</code></td><td>Personer + identitetskorrigering (avsnitt 11)</td><td>på</td></tr>
+  <tr><td><code>FEATURE_GROUND_TRUTH</code></td><td>Facit (avsnitt 12)</td><td>på</td></tr>
+  <tr><td><code>FEATURE_RUN_COMPARE</code></td><td>Jämför körningar (avsnitt 13)</td><td>på</td></tr>
+  <tr><td><code>FEATURE_CLIP_EXPORT</code></td><td>Klippexport (avsnitt 14)</td><td>på</td></tr>
+  <tr><td><code>FEATURE_HEATMAP</code></td><td>Värmekarta (avsnitt 15)</td><td>på</td></tr>
+</table>
+<p>Avstängda funktioner försvinner ur gränssnittet och markeras i den här handledningen. Redan
+gjorda identitetskorrigeringar fortsätter gälla även om <code>FEATURE_DOSSIER</code> stängs av —
+inställningen döljer verktyget, aldrig ert arbete.</p>
+
+<footer>
+  <p>Drönarverktygets granskningsvy · Handledningen nås alltid via ❓-knappen uppe till höger.
+  Tillbaka till <a href="/">granskningsvyn</a>.</p>
+</footer>
+
+<script>
+  // Mark sections whose feature is disabled in this installation. Fails
+  // open: if the fetch fails, nothing is marked and the full guide shows.
+  fetch("/api/features").then((r) => r.ok ? r.json() : null).then((features) => {
+    if (!features) return;
+    document.querySelectorAll(".feature-off[data-feature]").forEach((el) => {
+      if (features[el.dataset.feature] === false) el.style.display = "inline-block";
+    });
+  }).catch(() => {});
+</script>
+</body>
+</html>

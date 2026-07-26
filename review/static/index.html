@@ -19,6 +19,7 @@
       <div class="stat" id="st-persons" title="Unika personer"><b>–</b><small>personer</small></div>
       <div class="stat dim" id="st-bookmarks" title="Bokmärken"><b>0</b><small>bokmärken</small></div>
     </div>
+    <a id="guide-link" href="/guide" target="_blank" title="Öppna användarhandledningen i ny flik">❓ Handledning</a>
   </header>
 
   <main id="main-empty">
@@ -41,6 +42,7 @@
       <button class="chip on" data-layer="ids">ID</button>
       <button class="chip on" data-layer="status">Beteende</button>
       <button class="chip" data-layer="trails">Spår</button>
+      <button class="chip" data-layer="heatmap" data-feature="heatmap" title="Uppehållskarta: var personer befann sig och hur länge">Värmekarta</button>
       <span class="spacer"></span>
       <button class="chip" id="btn-bookmark">🔖 Bokmärke</button>
       <button class="chip" id="btn-screenshot">📸 Skärmdump</button>
@@ -59,6 +61,9 @@
         <button class="tab" data-tab="bookmarks">Bokmärken</button>
         <button class="tab" data-tab="screenshots">Skärmdumpar</button>
         <button class="tab" data-tab="operator">Operatör</button>
+        <button class="tab" data-tab="persons" data-feature="dossier">Personer</button>
+        <button class="tab" data-tab="groundtruth" data-feature="ground_truth">Facit</button>
+        <button class="tab" data-tab="runcompare" data-feature="run_compare">Körningar</button>
       </nav>
 
       <section class="card tab-pane" data-pane="events">
@@ -121,10 +126,101 @@
         <ul id="compare-list" class="scroll-list grow"><li class="dim">Ingen jämförelse ännu.</li></ul>
         <button type="button" id="btn-export-debrief" class="primary small">Exportera debrief (HTML)</button>
       </section>
+      <section class="card tab-pane hidden" data-pane="persons" data-feature="dossier">
+        <h3>Personer <span class="legend" id="persons-legend"></span></h3>
+        <ul id="person-list" class="scroll-list"><li class="dim">Ingen körning inläst.</li></ul>
+
+        <div id="person-detail" class="hidden">
+          <h3 id="pd-title">–</h3>
+          <div id="pd-meta" class="pd-meta"></div>
+          <div class="inline-form" data-feature="heatmap">
+            <button type="button" id="pd-heatmap-btn" class="small">Värmekarta för personen</button>
+            <span class="legend" id="pd-heatmap-state"></span>
+          </div>
+          <h4>Utseende över tid</h4>
+          <div id="pd-crops" class="pd-crops"><span class="dim">Laddar bildutsnitt …</span></div>
+          <h4>Rörelsebana <span class="legend">(råa bildkoordinater — ej kamerastabiliserad)</span></h4>
+          <div id="pd-trajectory"></div>
+          <h4>Händelser för personen</h4>
+          <ul id="pd-events" class="scroll-list"><li class="dim">Inga händelser.</li></ul>
+          <h4>Associationsspår (varför spåren blev en person)</h4>
+          <ul id="pd-audit" class="scroll-list"><li class="dim">Inget associationsspår.</li></ul>
+
+          <h4>Korrigera identitet</h4>
+          <form id="pd-merge-form" class="inline-form">
+            <label class="dim">Slå ihop med person:</label>
+            <select id="pd-merge-target"></select>
+            <input type="text" id="pd-merge-reason" placeholder="Motivering (valfritt)" maxlength="4000">
+            <button type="submit" class="small">Slå ihop</button>
+          </form>
+          <form id="pd-split-form" class="inline-form">
+            <label class="dim">Dela ut markerade spår till ny person:</label>
+            <div id="pd-split-tracklets"></div>
+            <input type="text" id="pd-split-reason" placeholder="Motivering (valfritt)" maxlength="4000">
+            <button type="submit" class="small">Dela</button>
+          </form>
+        </div>
+
+        <h4>Korrigeringslogg</h4>
+        <ul id="correction-list" class="scroll-list"><li class="dim">Inga korrigeringar.</li></ul>
+      </section>
+
+      <section class="card tab-pane hidden" data-pane="groundtruth" data-feature="ground_truth">
+        <h3>Facit (övningsledarens referens)</h3>
+        <form id="gt-import-form" class="inline-form">
+          <textarea id="gt-import-text" rows="4"
+            placeholder="Klistra in facit, en tidsatt rad per moment, t.ex.:&#10;0:30, figurant 1 lägger sig vid bilen&#10;2:10, figurant 2 går mot branden"></textarea>
+          <button type="submit" class="primary small">Importera facit</button>
+        </form>
+        <ul id="gt-warnings" class="scroll-list hidden"></ul>
+        <ul id="gt-list" class="scroll-list"><li class="dim">Inget facit inlagt.</li></ul>
+
+        <h3>Poängsättning mot facit</h3>
+        <div class="review-controls">
+          <label for="gt-tolerance-input">Tidstolerans (s)</label>
+          <input type="number" id="gt-tolerance-input" min="0" step="1" value="60">
+          <button type="button" id="btn-refresh-gt" class="small">Uppdatera</button>
+        </div>
+        <div class="summary" id="gt-stats">
+          <div class="stat"><b id="gt-ai-found">–</b><small>AI hittade</small></div>
+          <div class="stat"><b id="gt-op-found">–</b><small>operatör hittade</small></div>
+          <div class="stat"><b id="gt-total">–</b><small>facitposter</small></div>
+        </div>
+        <ul id="gt-score-list" class="scroll-list grow"><li class="dim">Ingen poängsättning ännu.</li></ul>
+      </section>
+
+      <section class="card tab-pane hidden" data-pane="runcompare" data-feature="run_compare">
+        <h3>Jämför körningar</h3>
+        <p class="dim small-note">Kör analysen två gånger med olika inställningar (via <code>analyze</code>-kommandot)
+          och jämför resultaten här. Endast körningar av samma videofil kan jämföras.</p>
+        <div class="review-controls">
+          <select id="rc-other-run"></select>
+          <label for="rc-tolerance-input">Tolerans (s)</label>
+          <input type="number" id="rc-tolerance-input" min="0" step="1" value="10">
+          <button type="button" id="btn-run-compare" class="primary small">Jämför</button>
+        </div>
+        <div id="rc-result" class="hidden">
+          <div class="summary" id="rc-stats">
+            <div class="stat"><b id="rc-both">–</b><small>gemensamma</small></div>
+            <div class="stat"><b id="rc-only-a">–</b><small>endast denna</small></div>
+            <div class="stat"><b id="rc-only-b">–</b><small>endast andra</small></div>
+          </div>
+          <h4>Konfigurationsskillnader</h4>
+          <ul id="rc-config-diff" class="scroll-list"></ul>
+          <h4>Passstatistik</h4>
+          <ul id="rc-pass-stats" class="scroll-list"></ul>
+          <h4>Händelsediff</h4>
+          <ul id="rc-events" class="scroll-list grow"></ul>
+        </div>
+      </section>
     </aside>
   </main>
 
   <div id="toast" class="hidden"></div>
+  <!-- Hidden second video element for dossier appearance crops: seeks
+       independently of the main player so extracting a crop never disturbs
+       playback. Same source file, same client-side-renderer principle. -->
+  <video id="crop-video" muted preload="metadata" hidden></video>
 
   <script src="/static/app.js"></script>
 </body>

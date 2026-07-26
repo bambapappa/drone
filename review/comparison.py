@@ -42,6 +42,46 @@ from typing import Any
 DEFAULT_TOLERANCE_S = 60.0
 
 
+def greedy_time_match(
+    items_a: list[dict[str, Any]],
+    items_b: list[dict[str, Any]],
+    t_a: str,
+    t_b: str,
+    id_a: str,
+    id_b: str,
+    tolerance_s: float,
+) -> list[tuple[dict[str, Any], dict[str, Any], float]]:
+    """Deterministic greedy nearest-time one-to-one assignment between two
+    lists of timed records. Returns (a, b, delta_s) triples with
+    delta_s = b[t_b] - a[t_a].
+
+    Shared by the AI-vs-operator comparison (Phase 3) and ground-truth
+    scoring (Phase 5) so the two can never drift on matching semantics.
+    All within-tolerance pairs are sorted by (|delta|, a's id, b's time,
+    b's id) and claimed smallest-delta first — the same inputs always
+    produce the same match regardless of input list order (the project's
+    "no RNG, fixed evaluation order" determinism convention).
+    """
+    candidates: list[tuple[float, Any, float, Any, dict[str, Any], dict[str, Any]]] = []
+    for a in items_a:
+        for b in items_b:
+            delta = b[t_b] - a[t_a]
+            if abs(delta) <= tolerance_s:
+                candidates.append((abs(delta), a[id_a], b[t_b], b[id_b], a, b))
+    candidates.sort(key=lambda c: c[:4])
+
+    matched_a: set[Any] = set()
+    matched_b: set[Any] = set()
+    out: list[tuple[dict[str, Any], dict[str, Any], float]] = []
+    for _, _, _, _, a, b in candidates:
+        if a[id_a] in matched_a or b[id_b] in matched_b:
+            continue
+        matched_a.add(a[id_a])
+        matched_b.add(b[id_b])
+        out.append((a, b, b[t_b] - a[t_a]))
+    return out
+
+
 @dataclass(frozen=True)
 class Match:
     event: dict[str, Any]
@@ -76,28 +116,15 @@ def compare_events_to_notes(
     live operator_notes annotation rows (need `annotation_id`, `t`). Returns
     matched pairs plus the unmatched remainder on each side.
     """
-    candidates: list[tuple[float, str, float, str, dict[str, Any], dict[str, Any]]] = []
-    for ev in events:
-        for note in notes:
-            delta = ev["t_start"] - note["t"]
-            if abs(delta) <= tolerance_s:
-                candidates.append((abs(delta), ev["event_id"], note["t"], note["annotation_id"], ev, note))
-    # Deterministic tie-break: |delta|, then event_id, then note time, then
-    # note annotation_id — independent of the order `events`/`notes` were
-    # passed in.
-    candidates.sort(key=lambda c: c[:4])
-
-    matched_events: set[str] = set()
-    matched_notes: set[str] = set()
-    both: list[Match] = []
-    for _, _, _, _, ev, note in candidates:
-        eid = ev["event_id"]
-        nid = note["annotation_id"]
-        if eid in matched_events or nid in matched_notes:
-            continue
-        matched_events.add(eid)
-        matched_notes.add(nid)
-        both.append(Match(event=ev, note=note, delta_s=note["t"] - ev["t_start"]))
+    # Tie-break order (|delta|, event_id, note time, note annotation_id) —
+    # independent of the order `events`/`notes` were passed in; see
+    # greedy_time_match.
+    triples = greedy_time_match(
+        events, notes, t_a="t_start", t_b="t", id_a="event_id", id_b="annotation_id", tolerance_s=tolerance_s
+    )
+    matched_events = {ev["event_id"] for ev, _, _ in triples}
+    matched_notes = {note["annotation_id"] for _, note, _ in triples}
+    both = [Match(event=ev, note=note, delta_s=delta) for ev, note, delta in triples]
 
     both.sort(key=lambda m: m.note["t"])
     ai_only = sorted((e for e in events if e["event_id"] not in matched_events), key=lambda e: e["t_start"])

@@ -67,6 +67,11 @@ body {
 }
 .stat b { display: block; font-size: 15px; }
 .stat small { color: var(--dim); font-size: 9px; text-transform: uppercase; letter-spacing: .5px; }
+.stat .person-count {
+  display: block;
+  text-transform: none;
+  letter-spacing: 0;
+}
 .stat .engine-uncertainty {
   display: block;
   color: var(--warn);

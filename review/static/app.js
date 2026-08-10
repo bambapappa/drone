@@ -79,6 +79,7 @@ const state = {
   // degrades to showing the controls — the server still 404s disabled ones.
   features: { dossier: true, ground_truth: true, run_compare: true, clip_export: true, heatmap: true },
   persons: [],             // corrected projection from GET /persons
+  personsCount: null,
   personsUniqueCount: 0,   // served unique_count (confirmed + manual, no transients)
   personsEngineUncertainty: null, // immutable P3 band + run/pass provenance
   selectedPersonId: null,
@@ -1454,6 +1455,7 @@ const PERSON_STATE_LABEL = {
 
 async function refreshPersons() {
   state.persons = [];
+  state.personsCount = null;
   state.personsUniqueCount = 0;
   state.personsEngineUncertainty = null;
   state.corrections = [];
@@ -1470,6 +1472,7 @@ async function refreshPersons() {
       if (pr.ok) {
         const pj = await pr.json();
         state.persons = pj.persons || [];
+        state.personsCount = pj.count ?? state.persons.length;
         state.personsUniqueCount = pj.unique_count ?? 0;
         state.personsEngineUncertainty = pj.engine_uncertainty || null;
       }
@@ -1997,18 +2000,21 @@ function updateStats() {
   // Falls back to the engine stat only before /persons has loaded.
   const p3 = state.runSummary?.passes?.["p3_identity"];
   const personStat = $("#st-persons");
-  personStat.querySelector("b").textContent = state.persons.length
+  personStat.querySelector("b").textContent = state.personsCount !== null
     ? state.personsUniqueCount
     : (p3?.stats?.confirmed_persons ?? p3?.stats?.persons_out ?? "–");
   const uncertainty = state.personsEngineUncertainty;
+  const totalCountEl = personStat.querySelector(".person-count");
   const uncertaintyEl = personStat.querySelector(".engine-uncertainty");
   const uncertainMerges = uncertainty?.uncertain_merges ?? 0;
-  uncertaintyEl.classList.toggle("hidden", uncertainMerges < 1);
-  uncertaintyEl.textContent = uncertainMerges > 0
+  totalCountEl.classList.toggle("hidden", state.personsCount === null);
+  totalCountEl.textContent = state.personsCount === null ? "" : `totalt: ${state.personsCount}`;
+  uncertaintyEl.classList.toggle("hidden", !uncertainty);
+  uncertaintyEl.textContent = uncertainty
     ? `motorn: ${uncertainMerges} osäkra sammanslagningar`
     : "";
   personStat.title = uncertainty
-    ? `Unika personer. Motorns osäkerhetsband hör till körning ${uncertainty.run_id} och räknas inte om av manuella korrigeringar.`
+    ? `Unika personer: ${state.personsUniqueCount}. Totalt i den korrigerade projektionen: ${state.personsCount}. Motorns osäkerhetsband hör till körning ${uncertainty.run_id} och räknas inte om av manuella korrigeringar.`
     : "Unika personer";
   $("#st-bookmarks").querySelector("b").textContent = state.bookmarks.length;
 }

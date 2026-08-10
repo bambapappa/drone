@@ -219,7 +219,7 @@ Två riktiga filmer (trafikolycka med IR-PiP; lägenhetsbrand med rök, 960×540
 
 ### B28. Granskningsvyn visar P3:s körningsbundna osäkerhetsband (2026-08-10)
 - **Problem:** Personantalet i granskningsvyn var ett ensamt exakt tal trots B23:s kontrakt. P3 beräknade, lagrade och skrev redan `uncertain_merges`, men webbvyn visade inte värdet.
-- **Beslut:** `GET /persons` returnerar `engine_uncertainty` med `run_id`, passnamn och P3-manifestets oförändrade `uncertain_merges` (0 för äldre sidecars). Sidhuvudet visar bandet på svenska som motorns osäkerhet för den öppna körningen. `unique_count` är fortsatt den aktuella korrigerade projektionen (`confirmed` + `manual`), men en manuell dela/slå ihop-operation räknar aldrig om osäkerhetsbandet: den ändrar människans aktuella identitetsbedömning, inte motorns historiska evidens, och får därför inte fabricera att en blockerad nära-sammanslagning är löst.
+- **Beslut:** `GET /persons` returnerar `engine_uncertainty` med `run_id`, passnamn och P3-manifestets oförändrade `uncertain_merges` (0 för äldre sidecars). Sidhuvudet visar `unique_count` som huvudtal, och under det både den korrigerade projektionens totala `count` och bandet på svenska som motorns osäkerhet för den öppna körningen. `unique_count` är fortsatt den aktuella korrigerade projektionen (`confirmed` + `manual`), men en manuell dela/slå ihop-operation räknar aldrig om osäkerhetsbandet: den ändrar människans aktuella identitetsbedömning, inte motorns historiska evidens, och får därför inte fabricera att en blockerad nära-sammanslagning är löst.
 
 ## Verifiering (körs mot riktig pipeline, ej mockad)
 

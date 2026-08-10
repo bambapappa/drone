@@ -163,7 +163,7 @@ def seed_counts_run(settings: ReviewSettings) -> str:
                 "assoc_audit": [],
             },
         )
-    store.record_pass_complete(P3, {"persons_out": 4, "confirmed_persons": 3})
+    store.record_pass_complete(P3, {"persons_out": 4, "confirmed_persons": 3, "uncertain_merges": 2})
     store.close()
     return store.run_id
 
@@ -340,6 +340,12 @@ async def test_persons_unique_count_excludes_transients(settings, client):
     body = r.json()
     assert body["count"] == 4
     assert body["unique_count"] == 3  # persons 1-3 confirmed, person 4 transient
+    engine_uncertainty = {
+        "run_id": rid,
+        "pass": P3,
+        "uncertain_merges": 2,
+    }
+    assert body["engine_uncertainty"] == engine_uncertainty
 
     r = await client.post(f"/api/runs/{rid}/identity-corrections", data={"op": "merge", "person_ids": "1,2"})
     assert r.status_code == 201
@@ -349,6 +355,17 @@ async def test_persons_unique_count_excludes_transients(settings, client):
     assert states == {1: "manual", 3: "confirmed", 4: "transient"}
     assert body["count"] == 3
     assert body["unique_count"] == 2
+    # A human merge changes the live projection, not P3's historical evidence.
+    assert body["engine_uncertainty"] == engine_uncertainty
+
+
+async def test_persons_engine_uncertainty_defaults_for_legacy_sidecar(settings, run_id, client):
+    body = (await client.get(f"/api/runs/{run_id}/persons")).json()
+    assert body["engine_uncertainty"] == {
+        "run_id": run_id,
+        "pass": P3,
+        "uncertain_merges": 0,
+    }
 
 
 async def test_correction_row_records_tracklet_key_and_provenance(settings, run_id, client):

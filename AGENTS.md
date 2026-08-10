@@ -318,10 +318,13 @@ match). Three gates, strongest first, in `analysis/identity.py`:
    (osnet and hsv vectors are different-dimensional and never compared
    across methods).
 
-**Unique count is honest, never one precise number**: confirmed persons + an
-uncertainty band from near-merges ("N unika, varav M osäkra sammanslagningar").
-Same-clothing confusion is a fundamental appearance-method limit (DECISIONS
-B4); the tool surfaces it via `assoc_audit`, never hides it.
+**Unique count is honest, never one precise number**: the review headline counts
+the live non-transient projection (`confirmed` + human-asserted `manual`), while
+its visible uncertainty band is the engine's immutable P3 `uncertain_merges`
+value for that run. Manual corrections never recompute the band: a human merge
+does not prove that a recorded blocked near-merge was resolved. Same-clothing
+confusion is a fundamental appearance-method limit (DECISIONS B4); the tool
+surfaces it via `assoc_audit`, never hides it.
 
 **Determinism**: P3 is pure-numpy constrained agglomerative clustering (no
 scipy/sklearn — tighter determinism), no RNG, fixed evaluation order →

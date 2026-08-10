@@ -547,10 +547,16 @@ async def get_persons(run_id: str, settings: ReviewSettings = Depends(get_settin
                        (transient excluded). This is NOT the engine's
                        p3.stats.confirmed_persons, which predates the
                        corrections layer and knows nothing of `manual`.
+
+    `engine_uncertainty` is deliberately read unchanged from this run's P3
+    manifest stats.  Identity corrections change the projected count, but a
+    human merge does not prove that P3's recorded blocked near-merge was
+    resolved, so projecting/recomputing the band would fabricate evidence.
     """
     store = _open_store(settings, run_id)
     p3 = OfflineOrchestrator.P3_PASS_NAME
-    if store.manifest.get("passes", {}).get(p3, {}).get("status") != "complete":
+    p3_info = store.manifest.get("passes", {}).get(p3, {})
+    if p3_info.get("status") != "complete":
         raise HTTPException(status_code=409, detail="P3 har inte körts")
     projection = _corrected_projection(store, _annotation_store(settings, run_id))
     non_transient = ("confirmed", STATE_MANUAL)
@@ -558,6 +564,11 @@ async def get_persons(run_id: str, settings: ReviewSettings = Depends(get_settin
         "persons": projection.persons,
         "count": len(projection.persons),
         "unique_count": sum(1 for p in projection.persons if p.get("confirmation_state") in non_transient),
+        "engine_uncertainty": {
+            "run_id": store.manifest.get("run_id", run_id),
+            "pass": p3,
+            "uncertain_merges": p3_info.get("stats", {}).get("uncertain_merges", 0),
+        },
         "corrections_applied": len(projection.applied),
         "corrections_skipped": projection.skipped,
     }

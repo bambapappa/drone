@@ -80,6 +80,7 @@ const state = {
   features: { dossier: true, ground_truth: true, run_compare: true, clip_export: true, heatmap: true },
   persons: [],             // corrected projection from GET /persons
   personsUniqueCount: 0,   // served unique_count (confirmed + manual, no transients)
+  personsEngineUncertainty: null, // immutable P3 band + run/pass provenance
   selectedPersonId: null,
   corrections: [],         // live identity-correction ops
   correctionsSkipped: [],  // ops the projection couldn't apply
@@ -1454,6 +1455,7 @@ const PERSON_STATE_LABEL = {
 async function refreshPersons() {
   state.persons = [];
   state.personsUniqueCount = 0;
+  state.personsEngineUncertainty = null;
   state.corrections = [];
   state.correctionsSkipped = [];
   if (state.runId) {
@@ -1469,6 +1471,7 @@ async function refreshPersons() {
         const pj = await pr.json();
         state.persons = pj.persons || [];
         state.personsUniqueCount = pj.unique_count ?? 0;
+        state.personsEngineUncertainty = pj.engine_uncertainty || null;
       }
       if (cr.ok) {
         const j = await cr.json();
@@ -1993,9 +1996,20 @@ function updateStats() {
   // full projected list — a transient track is not an established person.
   // Falls back to the engine stat only before /persons has loaded.
   const p3 = state.runSummary?.passes?.["p3_identity"];
-  $("#st-persons").querySelector("b").textContent = state.persons.length
+  const personStat = $("#st-persons");
+  personStat.querySelector("b").textContent = state.persons.length
     ? state.personsUniqueCount
     : (p3?.stats?.confirmed_persons ?? p3?.stats?.persons_out ?? "–");
+  const uncertainty = state.personsEngineUncertainty;
+  const uncertaintyEl = personStat.querySelector(".engine-uncertainty");
+  const uncertainMerges = uncertainty?.uncertain_merges ?? 0;
+  uncertaintyEl.classList.toggle("hidden", uncertainMerges < 1);
+  uncertaintyEl.textContent = uncertainMerges > 0
+    ? `motorn: ${uncertainMerges} osäkra sammanslagningar`
+    : "";
+  personStat.title = uncertainty
+    ? `Unika personer. Motorns osäkerhetsband hör till körning ${uncertainty.run_id} och räknas inte om av manuella korrigeringar.`
+    : "Unika personer";
   $("#st-bookmarks").querySelector("b").textContent = state.bookmarks.length;
 }
 

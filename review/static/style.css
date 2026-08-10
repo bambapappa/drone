@@ -67,6 +67,13 @@ body {
 }
 .stat b { display: block; font-size: 15px; }
 .stat small { color: var(--dim); font-size: 9px; text-transform: uppercase; letter-spacing: .5px; }
+.stat .engine-uncertainty {
+  display: block;
+  color: var(--warn);
+  max-width: 130px;
+  text-transform: none;
+  letter-spacing: 0;
+}
 .stat.dim b { color: var(--dim); font-weight: 400; }
 
 main { flex: 1; min-height: 0; }

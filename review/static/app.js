@@ -618,7 +618,7 @@ function setLayer(key, on) {
 // image every tick, so the per-frame cost is one drawImage.
 async function ensureHeatmap(personId) {
   if (!state.runId || state.heatmap.loading) return;
-  if (state.heatmap.canvas && state.heatmap.personId === personId) return;
+  if (state.heatmap.data && state.heatmap.personId === personId) return;
   state.heatmap.loading = true;
   try {
     const q = personId != null ? `?person_id=${personId}` : "";

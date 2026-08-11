@@ -667,13 +667,16 @@ function heatColor(v) {
 }
 
 function drawSceneHeatmap(hm, frameRecord, W, H) {
-  if (!frameRecord?.scene_to_frame) return false;
+  if (!frameRecord?.scene_to_frame) return "unknown";
   const segment = (hm.segments || []).find((item) => item.segment === frameRecord.scene_segment);
-  if (!segment) return false;
+  if (!segment) return "unknown";
+  let projected = false;
+  let rendered = false;
   for (const cell of segment.cells || []) {
     const center = projectPoint(frameRecord.scene_to_frame, cell.x, cell.y);
     const edge = projectPoint(frameRecord.scene_to_frame, cell.x + cell.width / 2, cell.y);
     if (!center || !edge) continue;
+    projected = true;
     if (center.x < -40 || center.x > W + 40 || center.y < -40 || center.y > H + 40) continue;
     const radius = Math.max(4, Math.min(60, Math.hypot(edge.x - center.x, edge.y - center.y)));
     const v = hm.max_s ? cell.seconds / hm.max_s : 0;
@@ -681,8 +684,10 @@ function drawSceneHeatmap(hm, frameRecord, W, H) {
     ctx.arc(center.x, center.y, radius, 0, Math.PI * 2);
     ctx.fillStyle = heatColor(v);
     ctx.fill();
+    rendered = true;
   }
-  return true;
+  if (rendered) return "shown";
+  return projected ? "offscreen" : "unknown";
 }
 
 function drawHeatmapLayer(W, H, frameRecord) {
@@ -690,9 +695,9 @@ function drawHeatmapLayer(W, H, frameRecord) {
   const off = state.heatmap.canvas;
   if (!hm && !off) return;
   ctx.save();
-  let shown = true;
+  let heatmapState = "shown";
   if (hm?.coordinate_space === "scene") {
-    shown = drawSceneHeatmap(hm, frameRecord, W, H);
+    heatmapState = drawSceneHeatmap(hm, frameRecord, W, H);
   } else if (off) {
     ctx.imageSmoothingEnabled = true;
     ctx.drawImage(off, 0, 0, W, H);
@@ -701,7 +706,11 @@ function drawHeatmapLayer(W, H, frameRecord) {
   // sparse whole-run map otherwise.
   const pid = state.heatmap.personId;
   const base = pid != null ? `Värmekarta: person P${pid}` : "Värmekarta: hela körningen";
-  const caption = shown ? base : `${base} — scenposition osäker`;
+  const caption = heatmapState === "shown"
+    ? base
+    : heatmapState === "offscreen"
+      ? `${base} — utanför bild`
+      : `${base} — scenposition okänd`;
   ctx.font = `bold ${Math.max(11, W / 80)}px system-ui, sans-serif`;
   ctx.textBaseline = "bottom";
   const pad = Math.max(6, W / 160);

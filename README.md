@@ -155,11 +155,13 @@ vilket gör en 16-minutersfilm till en översikt på några sekunder.
 
 P2 lagrar från och med B29 ett **lokalt scenkoordinatlager** från samma
 kamerarörelseestimering som BoT-SORT använder. Faromarkör, värmekarta,
-personbanor och rörelseanalys följer därför scenen när drönaren panorerar
-eller cirklar, i stället för att ligga fast i skärmpixlar. Vid ett visuellt
-avbrott startar ett nytt segment; verktyget visar då positionen som okänd
-i stället för att gissa. Detta är relativa scenkoordinater, inte GPS —
-global position kräver telemetri eller separat georeferering.
+personbanor och rörelseanalys följer därför den skattade scenen inom ett
+visuellt sammanhängande segment, i stället för att ligga fast i skärmpixlar.
+Vid ett visuellt avbrott startar ett nytt segment; verktyget visar då
+positionen som okänd i stället för att gissa. Detta är relativa
+scenkoordinater, inte GPS — global position kräver telemetri eller separat
+georeferering. Den 2D-affina skattningen är ännu inte acceptanstestad på den
+ursprungliga fältfilmen; lång cirkelflygning kan ge drift eller parallax.
 
 ### Bonusfunktioner bakom egna flaggor (fas 5)
 

@@ -28,6 +28,7 @@ for the offline tool). Code-level citations are in the companion scout report.
 | `analysis/pip.py` | `PipAutoDetector` (carried forward) |
 | `analysis/detector.py` | P1: stateless YOLO detection only, no tracker |
 | `analysis/tracker.py` | P2: BoT-SORT + GMC, driven from P1's persisted detections |
+| `analysis/scene.py` | B29: shared deterministic P2 GMC + segmented local scene transforms (relative, never GPS) |
 | `analysis/embedding.py` | P1 appearance embedder: OSNet primary + HSV fallback below the ReID floor |
 | `analysis/identity.py` | P3: global tracklet association into persons (constrained agglomerative clustering + `assoc_audit`) |
 | `analysis/events.py` | P5: behavior/situation/irrational status diffed into discrete events (STILLA/MOT_FARA/IRRATIONELL/HAZARD) |
@@ -43,7 +44,7 @@ for the offline tool). Code-level citations are in the companion scout report.
 | `review/identity_corrections.py` | Phase 5: read-time replay of manual split/merge ops over P3's persons (corrections are annotations, never mutations of `persons/`) |
 | `review/ground_truth.py` | Phase 5: scores AI events AND operator notes against the exercise leader's reference truth (time-proximity only) |
 | `review/run_compare.py` | Phase 5: diff two runs of the same video (config diff + per-category event buckets); also a CLI (`python -m review.run_compare`) |
-| `review/heatmap.py` | Phase 5: dwell-seconds grid over P2 tracklets (raw-pixel space — stab offsets aren't persisted, same documented caveat as P3's gate) |
+| `review/heatmap.py` | Phase 5/B29: dwell-seconds grid over P2 scene positions per linked segment; raw-pixel fallback for old sidecars |
 | `review/static/` | HTML5 `<video>` + overlay canvas + timeline strip + Phase 5 panes + `guide.html` (single-page, no build step) |
 
 The carved-out analyzer modules in `analysis/` are independent copies of their
@@ -57,13 +58,27 @@ The realtime PoC uses `time.monotonic()`. The analyzers themselves accept `t`
 as a float parameter and are unchanged — only the caller swaps the timebase.
 BoT-SORT's `track_buffer` is re-expressed as `fps × seconds` (not a fixed 120).
 
+### Local scene coordinates (B29)
+
+P2's BoT-SORT-compatible `SceneGMC` is the single camera-motion source for
+tracking and every spatial consumer. It persists `scene_to_frame`,
+`frame_to_scene`, `scene_segment`, and confidence per frame, plus scene foot
+position/body height on tracklet rows. If adjacent frames cannot be linked,
+a new segment starts and coordinates are never compared across that boundary.
+These are local relative coordinates, not georeference/GPS. New sidecars use
+them for P3/P5, hazard markers, trajectories, and heatmaps; old sidecars fall
+back to their original raw-pixel behavior. Design and loss semantics:
+`DECISIONS.md` B29.
+
 ### Artifact schema
 
 Sidecar store at `<output>/<run_id>/`:
 - `manifest.json` — video hash, config hash, model, seed, code version, pass log; also `video_filename` (basename only — the review API resolves it through `VIDEO_DIR` at serve time, so the sidecar stays portable)
-- `frames/<pass>.jsonl` — per-frame metadata (P1)
+- `frames/<pass>.jsonl` — P1 PTS metadata; P2 local scene transforms,
+  segment/link quality and matching PTS (B29)
 - `detections/<pass>.jsonl` — P1's raw per-detection output (never tracker-adjusted), with raw appearance embedding + `embedding_method` ("osnet"|"hsv")
-- `tracklets/<pass>.jsonl` — P2's per-(track_id, frame) tracker/Kalman-adjusted boxes, referencing back to `det_id`
+- `tracklets/<pass>.jsonl` — P2's per-(track_id, frame) tracker/Kalman-adjusted
+  boxes referencing `det_id`, plus local scene foot point/body height/segment
 - `persons/<pass>.jsonl` — P3's per-identity records: `person_id, tracklet_ids, embedding_centroids, first/last_seen, confirmation_state, assoc_audit`
 - `events/<pass>.jsonl` — P5's per-event records: `event_id, category, person_id|null, t_start, t_end, confidence, evidence, review` (default unreviewed). Categories: STILLA, MOT_FARA, IRRATIONELL (Phase 4), HAZARD.
 - `annotations/{bookmarks,screenshots,verdicts,operator_notes,hazard_marker,identity_corrections,ground_truth}.jsonl` — human review layer. **Append-only log, separate from AI tables** — never mixed into events/, never overwritten by re-analysis. bookmarks/screenshots/operator_notes/identity_corrections/ground_truth are entity-per-row with tombstone soft-delete; `verdicts` and `hazard_marker` are latest-row-wins instead (a verdict is a state-transition history keyed by `event_id`; `hazard_marker` is a single evolving value with no key — only one exists per run) — see `review/annotations.py`'s module docstring, `AnnotationStore.all_verdicts`, `AnnotationStore.get_hazard_marker`. An `identity_corrections` row is one split/merge *operation*; tombstoning it = undo (the read-time projection replays live ops only). **Toggles never hide recorded human work:** a `FEATURE_*` flag gates the write path and a kind's dedicated endpoints/UI, but the raw append-only log under `GET /annotations` stays readable for every kind, always — a toggle is a capability switch, not a retention or visibility policy. This holds for every kind added from here on.
@@ -217,6 +232,13 @@ and would collapse distinct people into one bucket), matched by
 overlapping/closest time span since MOT_FARA event ids and spans are not
 stable across marker positions. Full reasoning: DECISIONS.md B26.
 
+From B29 onward the marker annotation also stores its anchor frame, local
+scene point, segment, and transform confidence. The UI projects it through
+the current frame's persisted transform, marks it outside the viewport when
+appropriate, and requires re-anchoring after an unlinked segment instead of
+guessing. Older annotations without scene provenance keep fixed-pixel
+behavior.
+
 **Timeline strip (`review/static/app.js:renderTimeline`).** A sidebar tab
 rendering an SVG strip — one lane per person (STILLA/MOT_FARA/IRRATIONELL
 spans), one for HAZARD, one for bookmarks, one for operator notes. Click any
@@ -283,12 +305,11 @@ hides its tab/button via `GET /api/features`):
   MediaRecorder over the same video+overlay composite as screenshots) —
   no second annotated-frame renderer, ever (report §2.5). Real-time
   recording is a known property, documented in the guide.
-- **Heatmap is raw-pixel space, not the report's "stabilized frame"** —
-  stab offsets were never persisted (same documented gap as P3's
-  spatio-temporal gate, B23). Honest caveat in UI + guide; persisting
-  offsets in P2 upgrades both in one place later. Frame dims come from
-  P1's pass meta (`width`/`height`, added in Phase 5); older sidecars fall
-  back to box extents.
+- **Heatmap uses B29's local scene space**, split by visually linked segment;
+  the client projects only the segment that belongs to the current frame.
+  Older sidecars without scene fields retain the Phase 5 raw-pixel fallback
+  and its honest UI caveat. Frame dimensions for that fallback come from P1
+  pass meta; still older sidecars fall back to box extents.
 - **User guide** (`review/static/guide.html`, served at `/guide`, linked
   from the top bar): Swedish-only, written for a first-time user,
   end-to-end (analyze → open → layers → timeline → review queue →
@@ -310,10 +331,10 @@ match). Three gates, strongest first, in `analysis/identity.py`:
    set), trivial offline. The biggest correctness lever the offline tool has
    over the live one for identity.
 2. **Spatio-temporal plausibility** — generalizes `registry.py:_match_lost`'s
-   `max_dist_frac × diag × (1+gap_s)` gate. Positions are raw frame pixels
-   (no GMC stabilization persisted in Phase 0), so this is a plausibility
-   filter, not a motion model; appearance + temporal exclusion do the real
-   identity work.
+   `max_dist_frac × diag × (1+gap_s)` gate. New sidecars use B29 scene
+   positions and block association across unrelated scene segments; older
+   sidecars use the original raw-frame plausibility fallback. Appearance +
+   temporal exclusion still do the primary identity work.
 3. **Appearance similarity** — best same-method cosine of embedding centroids
    (osnet and hsv vectors are different-dimensional and never compared
    across methods).

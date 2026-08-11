@@ -48,7 +48,9 @@ def settings(tmp_path: Path, monkeypatch) -> ReviewSettings:
     return ReviewSettings.from_env()
 
 
-def seed_run(settings: ReviewSettings, video_hash: str = "vh-aaa", tiles: int = 1) -> str:
+def seed_run(
+    settings: ReviewSettings, video_hash: str = "vh-aaa", tiles: int = 1, scene: bool = False
+) -> str:
     """A run with two persons (one two-tracklet), P1 dims, and P5 events."""
     store = ArtifactStore(str(settings.output_dir), video_hash, f"ch-{tiles}")
     store.create()
@@ -61,20 +63,43 @@ def seed_run(settings: ReviewSettings, video_hash: str = "vh-aaa", tiles: int = 
     store.record_pass_complete(P1, {"frames_processed": 10, "total_detections": 20})
     store.record_pass_start(P2, {})
     store.start_fresh_pass_output("tracklets", P2)
+    if scene:
+        store.start_fresh_pass_output("frames", P2)
+        for fn in range(10):
+            tx = float(fn * 5)
+            store.add_frame(
+                P2,
+                fn,
+                {
+                    "pts_ms": fn * 100.0,
+                    "scene_segment": 0,
+                    "scene_to_frame": [[1.0, 0.0, tx], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                    "frame_to_scene": [[1.0, 0.0, -tx], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                    "scene_confidence": 0.9,
+                    "scene_linked": True,
+                },
+            )
+
+    def tracklet_payload(x0: float, y0: float, x1: float, y1: float, fn: int) -> dict:
+        payload = {"cls": "person", "conf": 0.9, "xyxy": [x0, y0, x1, y1]}
+        if scene:
+            payload.update(
+                {
+                    "scene_pos": [(x0 + x1) / 2.0 - fn * 5, y1],
+                    "scene_box_h": y1 - y0,
+                    "scene_segment": 0,
+                }
+            )
+        return payload
+
     # Tracklet 1: frames 0-4, tracklet 3: frames 6-9 (same person per P3),
     # tracklet 2: frames 0-9 (the other person).
     for fn in range(5):
-        store.add_tracklet_frame(
-            P2, 1, fn, fn * 3, {"cls": "person", "conf": 0.9, "xyxy": [100.0, 100.0, 130.0, 200.0]}
-        )
+        store.add_tracklet_frame(P2, 1, fn, fn * 3, tracklet_payload(100.0, 100.0, 130.0, 200.0, fn))
     for fn in range(6, 10):
-        store.add_tracklet_frame(
-            P2, 3, fn, fn * 3 + 1, {"cls": "person", "conf": 0.9, "xyxy": [120.0, 100.0, 150.0, 200.0]}
-        )
+        store.add_tracklet_frame(P2, 3, fn, fn * 3 + 1, tracklet_payload(120.0, 100.0, 150.0, 200.0, fn))
     for fn in range(10):
-        store.add_tracklet_frame(
-            P2, 2, fn, fn * 3 + 2, {"cls": "person", "conf": 0.85, "xyxy": [800.0, 300.0, 830.0, 400.0]}
-        )
+        store.add_tracklet_frame(P2, 2, fn, fn * 3 + 2, tracklet_payload(800.0, 300.0, 830.0, 400.0, fn))
     store.record_pass_complete(P2, {"total_tracklet_rows": 19})
     store.record_pass_start(P3, {})
     store.start_fresh_pass_output("persons", P3)
@@ -456,9 +481,23 @@ async def test_trajectory_endpoint(settings, run_id, client):
     # Person 1 owns tracklets 1 (5 frames) + 3 (4 frames).
     assert body["n_total"] == 9
     assert body["stride"] == 1
+    assert body["coordinate_space"] == "frame"
     assert body["points"][0] == {"frame_no": 0, "t": 0.0, "x": 115.0, "y": 200.0, "tracklet_id": 1}
     r = await client.get(f"/api/runs/{run_id}/persons/42/trajectory")
     assert r.status_code == 404
+
+
+async def test_trajectory_endpoint_uses_scene_coordinates(settings, client):
+    scene_run = seed_run(settings, video_hash="vh-scene", tiles=3, scene=True)
+    r = await client.get(f"/api/runs/{scene_run}/persons/1/trajectory")
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["coordinate_space"] == "scene"
+    assert body["points"][0]["scene_segment"] == 0
+    # Raw foot x is 115 in every frame, but the camera translates +5/frame.
+    assert body["points"][0]["x"] == 115.0
+    assert body["points"][1]["x"] == 110.0
 
 
 # ---- ground truth ----

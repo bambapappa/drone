@@ -153,6 +153,14 @@ flaggor, farhändelser, bokmärken och importerade operatörsanteckningar som
 en horisontell remsa — klicka var som helst för att söka videon dit,
 vilket gör en 16-minutersfilm till en översikt på några sekunder.
 
+P2 lagrar från och med B29 ett **lokalt scenkoordinatlager** från samma
+kamerarörelseestimering som BoT-SORT använder. Faromarkör, värmekarta,
+personbanor och rörelseanalys följer därför scenen när drönaren panorerar
+eller cirklar, i stället för att ligga fast i skärmpixlar. Vid ett visuellt
+avbrott startar ett nytt segment; verktyget visar då positionen som okänd
+i stället för att gissa. Detta är relativa scenkoordinater, inte GPS —
+global position kräver telemetri eller separat georeferering.
+
 ### Bonusfunktioner bakom egna flaggor (fas 5)
 
 Fem fristående tillägg, vart och ett bakom en egen miljövariabel (alla
@@ -176,7 +184,9 @@ default på; oberoende av varandra — se [docs/CONFIG.md](docs/CONFIG.md)):
   WebM-klipp ±5 s runt en händelse med boxar/flaggor inritade, helt i
   webbläsaren (samma enda annoterings-renderare som skärmdumparna).
 - **Värmekarta** (`FEATURE_HEATMAP`): uppehållskarta över var personer
-  befann sig och hur länge — för sökmönster-genomgångar.
+  befann sig och hur länge i det lokala scenrummet — för
+  sökmönster-genomgångar. Äldre analyser utan scenfält visas fortfarande i
+  sitt tidigare råpixel-läge.
 
 Granskningsvyn har också en **användarhandledning på svenska** som egen
 sida (❓-knappen uppe till höger, eller `/guide`) — skriven för den som

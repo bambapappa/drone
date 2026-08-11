@@ -365,14 +365,42 @@ class AnnotationStore:
 
     # ---- hazard marker (Phase 4 retroactive MOT_FARA recompute) ----
 
-    def set_hazard_marker(self, x: float, y: float, note: str | None = None) -> dict[str, Any]:
-        """Place/move the reviewer's hazard marker. `x`/`y` are frame-pixel
-        coordinates — the same space the overlay canvas already draws
-        tracklet boxes in (see review/static/app.js), so a click on the
-        canvas maps straight through with no conversion. Every placement
-        appends a full row (never rewritten), mirroring set_verdict's
-        audit-trail discipline; the read side reduces to the latest row."""
-        return self._append(HAZARD_MARKER, {"x": round(float(x), 1), "y": round(float(y), 1), "note": note})
+    def set_hazard_marker(
+        self,
+        x: float,
+        y: float,
+        note: str | None = None,
+        anchor_frame: int | None = None,
+        scene_x: float | None = None,
+        scene_y: float | None = None,
+        scene_segment: int | None = None,
+        scene_confidence: float | None = None,
+    ) -> dict[str, Any]:
+        """Place/move the reviewer's hazard marker append-only.
+
+        `x`/`y` retain the clicked frame-pixel provenance and legacy fallback.
+        New B29 sidecars also supply the anchor frame and local scene point;
+        all scene fields are written together or not at all. Every placement
+        appends a full row (never rewritten), mirroring set_verdict's audit
+        trail; the read side reduces to the latest row.
+        """
+        data: dict[str, Any] = {"x": round(float(x), 1), "y": round(float(y), 1), "note": note}
+        if (
+            anchor_frame is not None
+            and scene_x is not None
+            and scene_y is not None
+            and scene_segment is not None
+        ):
+            data.update(
+                {
+                    "anchor_frame": int(anchor_frame),
+                    "scene_x": round(float(scene_x), 4),
+                    "scene_y": round(float(scene_y), 4),
+                    "scene_segment": int(scene_segment),
+                    "scene_confidence": round(float(scene_confidence or 0.0), 4),
+                }
+            )
+        return self._append(HAZARD_MARKER, data)
 
     def clear_hazard_marker(self) -> dict[str, Any]:
         """Remove the manual override — MOT_FARA falls back to the engine's

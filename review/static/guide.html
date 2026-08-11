@@ -189,6 +189,14 @@ position, men ni kan sätta en egen:</p>
     för det som hände innan markören sattes. Det är något ett realtidsverktyg aldrig kan göra.</li>
   <li><strong>✕ Rensa markör</strong> återgår till AI:ns egen faropunkt.</li>
 </ol>
+<p>Markören är förankrad i den synliga scenen, ungefär som en nål på en papperskarta: när drönaren
+panorerar eller cirklar projiceras nålen till sin nya plats i bilden. Om faran hamnar utanför bild
+visas den vid bildkanten med texten <strong>FARA UTANFÖR BILD</strong>. Ingen GPS behövs för denna
+relativa förankring.</p>
+<div class="note">Om verktyget tappar alla visuella landmärken — till exempel efter ett klipp,
+kraftig oskärpa eller en helt annan vy — går det inte att veta var den gamla punkten ligger utan
+GPS/telemetri. Då visas <strong>FARANS POSITION OSÄKER — MARKERA IGEN</strong>. Sök till en bild där
+faran är synlig och sätt markören på nytt; verktyget gissar aldrig över ett sådant avbrott.</div>
 <div class="note warn">När markören flyttas ändras MOT FARA-händelserna. Verktyget för över era
 redan gjorda bekräfta/avvisa-bedömningar till motsvarande nya händelse så gott det går (samma
 spår, närmaste tidsintervall) — men kontrollera MOT FARA-bedömningarna efter en flytt: en händelse
@@ -216,6 +224,8 @@ sammanslagning — två samtidiga spår är normalt olika personer.</p>
 Det är AI-motorns osäkerhetsband från just den öppna analyskörningen. Talet räknas inte om när ni
 delar eller slår ihop personer manuellt: korrigeringen ändrar det aktuella personantalet, men den
 ändrar inte vad motorn var osäker på när analysen kördes.</p>
+<p>Rörelsebanan är scenkompenserad: drönarens egen kamerarörelse räknas bort. Om filmen innehåller
+visuella avbrott visas banan som flera åtskilda delar, aldrig som en påhittad linje mellan dem.</p>
 
 <h2 id="facit">12. Facit <span class="feature-off" data-feature="ground_truth">AVSTÄNGD I DENNA INSTALLATION</span></h2>
 <p>Övningsledaren vet vad som faktiskt hände ("3 figuranter: 1 ligger vid bilen från 0:30 …").
@@ -259,9 +269,10 @@ folk, vilka ytor blev aldrig besökta?</p>
 <strong>Värmekarta för personen</strong> — kartan visar då bara den personens uppehållstid, och knappen
 växlar tillbaka till hela körningen. Texten nere i bildens vänstra hörn talar alltid om vilken av
 de två kartorna som visas.</p>
-<div class="note">Kartan ritas i bildens koordinater. Om drönaren flyttat sig mycket under filmen
-"smetas" kartan ut längs kamerarörelsen — den är som mest rättvisande när drönaren i huvudsak
-hovrat över samma plats.</div>
+<div class="note">Nya analyser ritar kartan i lokala scenkoordinater, så den följer marken när
+drönaren rör sig. Ett visuellt avbrott delar filmen i flera kartdelar; bara den del som hör ihop
+med den aktuella bilden kan projiceras säkert. Äldre analyser som saknar scenkoordinater visas i
+bildkoordinater och kan därför smetas ut av stor kamerarörelse.</div>
 
 <h2 id="funktioner">16. Slå av och på funktioner</h2>
 <p>Funktionerna i avsnitt 11–15 kan slås av var för sig av den som driftar verktyget, utan

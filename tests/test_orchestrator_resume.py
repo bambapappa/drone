@@ -295,6 +295,16 @@ class TestP2TrackingDeterminism:
             tracklets_b = list(store_b.iter_tracklets(OfflineOrchestrator.P2_PASS_NAME))
             assert tracklets_a == tracklets_b
             assert tracklets_a  # sanity: the tracker actually produced output
+            assert all({"scene_pos", "scene_box_h", "scene_segment"} <= row.keys() for row in tracklets_a)
+
+            scene_frames_a = list(store_a.iter_frames(OfflineOrchestrator.P2_PASS_NAME))
+            scene_frames_b = list(store_b.iter_frames(OfflineOrchestrator.P2_PASS_NAME))
+            assert scene_frames_a == scene_frames_b
+            assert len(scene_frames_a) == 10
+            assert all(
+                {"scene_to_frame", "frame_to_scene", "scene_segment", "scene_confidence"} <= row.keys()
+                for row in scene_frames_a
+            )
 
     def test_p2_rerun_on_same_store_overwrites_not_appends(self):
         """P2 always fully re-runs; re-running it on a store that already

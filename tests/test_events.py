@@ -165,6 +165,27 @@ class TestBehaviorEventDiff:
         )
         assert len([e for e in events if e.category == CATEGORY_MOT_FARA]) == 0
 
+    def test_scene_segment_break_resets_stillness_history(self):
+        # Ten seconds stationary would normally fire STILLA. Split into
+        # visually unrelated five-second local maps, neither side has the
+        # 3 s history + 4 s sustained gate, so no event may bridge the cut.
+        rows = _trk(1, list(range(100)), [(100.0, 100.0, 130.0, 180.0)] * 100)
+        for row in rows:
+            row["scene_pos"] = [115.0, 180.0]
+            row["scene_box_h"] = 80.0
+            row["scene_segment"] = 0 if row["frame_no"] < 50 else 1
+
+        events = derive_behavior_events(
+            rows,
+            person_by_tracklet={},
+            fps=10.0,
+            frame_w=320,
+            frame_h=240,
+            config=_beh_config(),
+        )
+
+        assert not any(e.category == CATEGORY_STILLA for e in events)
+
     def test_review_state_defaults_to_unreviewed(self):
         fps = 10.0
         rows = _trk(1, list(range(60)), [(100.0, 100.0, 130.0, 180.0)] * 60, fps=fps)

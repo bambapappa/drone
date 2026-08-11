@@ -55,3 +55,30 @@ def test_deterministic():
     a = compute_heatmap(rows, fps=25.0, frame_w=640, frame_h=360)
     b = compute_heatmap(rows, fps=25.0, frame_w=640, frame_h=360)
     assert a == b
+
+
+def test_scene_heatmap_groups_cells_by_visual_segment():
+    rows = [
+        {
+            **row(1, 0, 90, 100, 110, 200),
+            "scene_pos": [100.0, 200.0],
+            "scene_segment": 0,
+        },
+        {
+            **row(1, 1, 90, 100, 110, 200),
+            "scene_pos": [110.0, 200.0],
+            "scene_segment": 0,
+        },
+        {
+            **row(1, 2, 90, 100, 110, 200),
+            "scene_pos": [10.0, 20.0],
+            "scene_segment": 1,
+        },
+    ]
+
+    hm = compute_heatmap(rows, fps=1.0, frame_w=1000, frame_h=500, grid_w=10)
+
+    assert hm["coordinate_space"] == "scene"
+    assert [segment["segment"] for segment in hm["segments"]] == [0, 1]
+    assert sum(cell["seconds"] for cell in hm["segments"][0]["cells"]) == 2.0
+    assert sum(cell["seconds"] for cell in hm["segments"][1]["cells"]) == 1.0

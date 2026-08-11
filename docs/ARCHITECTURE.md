@@ -202,7 +202,8 @@ default på, oberoende av varandra; se [CONFIG.md](CONFIG.md)):
 | `review/identity_corrections.py` | Spelar upp manuella dela/slå ihop-operationer (`annotations/identity_corrections.jsonl`) över P3:s personer vid läsning. `persons/` skrivs aldrig om — en korrigering är märkt facit (framtida träningsdata), inte en redigering av motorns utdata. Tombstone = ångra. |
 | `review/ground_truth.py` | Poängsätter både AI-händelser och operatörsanteckningar mot övningsledarens facit (`annotations/ground_truth.jsonl`, samma radformat och parser som operatörsanteckningarna). Enbart tidsnärhet, via delade `greedy_time_match`. Inget persisteras. |
 | `review/run_compare.py` | Diffar två färdiga körningar av samma film (video_hash-tvång): konfigurationsskillnader ur manifesten, passstatistik, per-kategori-händelsehinkar. Batch — nya körningar produceras alltid via `analyze`-CLI:t; även körbar headless (`python -m review.run_compare`). |
-| `review/heatmap.py` | Uppehållstid per rutnätscell över P2:s tracklets (fotpunkten). Råa bildkoordinater — stab-offsets persisteras inte (samma dokumenterade lucka som P3-porten, B23). |
+| `analysis/scene.py` | Gemensam deterministisk P2-GMC och lokala scenmatriser. Visuellt tapp startar nytt segment; ingen georeferens fabriceras. |
+| `review/heatmap.py` | Uppehållstid per rutnätscell över P2:s scenfotpunkter, grupperad per visuellt länkat segment. Äldre sidecars faller tillbaka på råa bildkoordinater. |
 | (klientsidigt) | Klippexport: `canvas.captureStream` + `MediaRecorder` över samma video+overlay-komposit som skärmdumparna → WebM. Ingen server-renderare (dubbel-renderare-regeln §2.5). |
 
 Användarhandledningen (`review/static/guide.html`, `/guide`) är en
@@ -210,3 +211,18 @@ fristående svensk sida som täcker hela verktyget för en förstagångs-
 användare; den står aldrig bakom någon flagga och markerar själv avstängda
 funktioner via `GET /api/features`. Fullständigt resonemang i DECISIONS.md
 B27.
+
+### Lokalt scenkoordinatlager (B29)
+
+P2 persisterar `scene_to_frame`, `frame_to_scene`, `scene_segment` och
+`scene_confidence` per bildruta i `frames/p2_track.jsonl`. Samma GMC-instans
+driver BoT-SORT, så spårkompensering och den lagrade scenmodellen kan inte
+glida isär. Tracklet-rader kompletteras med scenfotpunkt och scenkroppshöjd;
+råa boxar bevaras som motorns ursprungliga bildbevis.
+
+Faromarkören lagrar ankarruta, segment och scenpunkt i den append-only
+annoteringsloggen. Review-klienten projicerar punkten till varje aktuell
+bildruta; P3/P5, personbanor och värmekartan återanvänder samma substrat.
+Om optiskt flöde inte kan länka två rutor börjar ett nytt lokalt segment och
+ingen konsument får jämföra positioner över gränsen. Koordinaterna är
+relativa inom filmen, inte latitud/longitud. Se `DECISIONS.md` B29.

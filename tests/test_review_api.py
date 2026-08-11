@@ -435,17 +435,44 @@ def moving_run_id(settings: ReviewSettings) -> str:
     store.create()
     store.set_video_filename("film.mp4")
     store.record_pass_start(OfflineOrchestrator.P1_PASS_NAME, {"fps": 10.0})
+    store.start_fresh_pass_output("frames", OfflineOrchestrator.P1_PASS_NAME)
     store.record_pass_complete(OfflineOrchestrator.P1_PASS_NAME, {})
     store.record_pass_start(OfflineOrchestrator.P2_PASS_NAME, {})
     store.start_fresh_pass_output("tracklets", OfflineOrchestrator.P2_PASS_NAME)
+    store.start_fresh_pass_output("frames", OfflineOrchestrator.P2_PASS_NAME)
     for i in range(80):
         x = 50.0 + i * 4.0
+        store.add_frame(
+            OfflineOrchestrator.P1_PASS_NAME,
+            i,
+            {"pts_ms": i * 100.0},
+        )
+        tx = 100.0 if i == 10 else 0.0
+        store.add_frame(
+            OfflineOrchestrator.P2_PASS_NAME,
+            i,
+            {
+                "pts_ms": i * 100.0,
+                "scene_segment": 0,
+                "scene_to_frame": [[1.0, 0.0, tx], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                "frame_to_scene": [[1.0, 0.0, -tx], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                "scene_confidence": 0.9,
+                "scene_linked": True,
+            },
+        )
         store.add_tracklet_frame(
             OfflineOrchestrator.P2_PASS_NAME,
             tracklet_id=1,
             frame_no=i,
             det_id=i,
-            data={"cls": "person", "conf": 0.9, "xyxy": [x, 100.0, x + 30.0, 180.0]},
+            data={
+                "cls": "person",
+                "conf": 0.9,
+                "xyxy": [x, 100.0, x + 30.0, 180.0],
+                "scene_pos": [x + 15.0, 180.0],
+                "scene_box_h": 80.0,
+                "scene_segment": 0,
+            },
         )
     store.record_pass_complete(OfflineOrchestrator.P2_PASS_NAME, {"total_tracklet_rows": 80})
     store.record_pass_start(OfflineOrchestrator.P5_PASS_NAME, {"config": {}})
@@ -480,6 +507,34 @@ async def test_placing_hazard_marker_recomputes_mot_fara(settings, moving_run_id
     body = r.json()
     assert body["count"] >= 1
     assert all(e["category"] == "MOT_FARA" for e in body["events"])
+
+
+async def test_scene_marker_is_derived_server_side_from_anchor_frame(settings, moving_run_id, client):
+    r = await client.post(
+        f"/api/runs/{moving_run_id}/hazard-marker",
+        data={"x": "500", "y": "140", "frame_no": "10"},
+    )
+    assert r.status_code == 201
+    body = r.json()
+    assert body["anchor_frame"] == 10
+    assert body["scene_x"] == 400.0  # frame 10 has +100 screen translation
+    assert body["scene_y"] == 140.0
+    assert body["scene_segment"] == 0
+
+    marker = (await client.get(f"/api/runs/{moving_run_id}/hazard-marker")).json()
+    assert marker["coordinate_space"] == "scene"
+    assert marker["scene_x"] == 400.0
+
+
+async def test_frames_meta_includes_persisted_scene_transform(settings, moving_run_id, client):
+    r = await client.get(
+        f"/api/runs/{moving_run_id}/frames/meta",
+        params={"from": 10, "to": 10},
+    )
+    assert r.status_code == 200
+    frame = r.json()["frames"][0]
+    assert frame["scene_segment"] == 0
+    assert frame["scene_to_frame"][0][2] == 100.0
 
 
 async def test_clearing_hazard_marker_reverts_to_engine_output(settings, moving_run_id, client):

@@ -29,9 +29,11 @@ class TrackedBox:
 
 
 class Tracker:
-    def __init__(self, tracker_yaml: str):
+    def __init__(self, tracker_yaml: str, seed: int = 42):
         from ultralytics.trackers.bot_sort import BOTSORT
         from ultralytics.utils import YAML, IterableSimpleNamespace
+
+        from analysis.scene import SceneGMC
 
         tcfg = YAML.load(tracker_yaml)
         # Appearance ReID is off at the tracker level: P2 associates
@@ -40,6 +42,11 @@ class Tracker:
         # the person registry's job (Phase 3), not this pass's.
         tcfg["with_reid"] = False
         self._tracker = BOTSORT(IterableSimpleNamespace(**tcfg))
+        # B29: BoT-SORT and the persisted scene layer share this exact GMC
+        # estimate. A second camera-motion implementation would recreate the
+        # dual-source drift problem the artifact seam is meant to prevent.
+        self.scene_gmc = SceneGMC(seed=seed)
+        self._tracker.gmc = self.scene_gmc
 
     def update(self, records: list[dict[str, Any]], frame_bgr: np.ndarray) -> list[TrackedBox]:
         """Advance the tracker by one frame.

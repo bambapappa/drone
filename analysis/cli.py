@@ -260,6 +260,7 @@ def main() -> None:
     p2_stats = p2_info.get("stats", {})
     print(f"  Frames:         {p2_stats.get('frames_processed', '?')}/{meta.total_frames}")
     print(f"  Tracklet rows:  {p2_stats.get('total_tracklet_rows', '?')}")
+    print(f"  Scensegment:    {p2_stats.get('scene_segments', '?')}")
     print(f"  Time:           {p2_stats.get('elapsed_s', '?')}s")
     print(f"  Effective fps:  {p2_stats.get('fps_effective', 0)}")
 

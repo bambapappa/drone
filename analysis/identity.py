@@ -78,10 +78,12 @@ class TrackletProfile:
     # were above the ReID floor and some below — P3 compares within a method.
     centroids: dict[str, np.ndarray] = field(default_factory=dict)
     counts: dict[str, int] = field(default_factory=dict)
-    # Center of the first / last detection box (raw frame pixels) — the two
-    # endpoints the spatio-temporal gate measures re-entry distance across.
+    # B29 scene point when available, raw box center for old sidecars. Segment
+    # ids prevent comparing unrelated local maps after GMC loses the scene.
     start_center: tuple[float, float] = (0.0, 0.0)
     end_center: tuple[float, float] = (0.0, 0.0)
+    start_segment: int | None = None
+    end_segment: int | None = None
 
 
 @dataclass
@@ -157,6 +159,7 @@ def build_tracklet_profiles(
     first_fno: dict[int, int] = {}
     last_fno: dict[int, int] = {}
     centers: dict[int, dict[int, tuple[float, float]]] = {}
+    segments: dict[int, dict[int, int | None]] = {}
 
     for row in tracklet_rows:
         tid = row["tracklet_id"]
@@ -175,12 +178,18 @@ def build_tracklet_profiles(
             by_id[tid] = prof
             sums[tid] = {}
             centers[tid] = {}
+            segments[tid] = {}
         prof.frames.add(fno)
         prof.frame_start = min(prof.frame_start, fno)
         prof.frame_end = max(prof.frame_end, fno)
 
-        x0, y0, x1, y1 = row["xyxy"]
-        centers[tid][fno] = ((x0 + x1) / 2.0, (y0 + y1) / 2.0)
+        if row.get("scene_pos") is not None:
+            centers[tid][fno] = tuple(float(v) for v in row["scene_pos"])
+            segments[tid][fno] = int(row["scene_segment"])
+        else:
+            x0, y0, x1, y1 = row["xyxy"]
+            centers[tid][fno] = ((x0 + x1) / 2.0, (y0 + y1) / 2.0)
+            segments[tid][fno] = None
         if tid not in first_fno or fno < first_fno[tid]:
             first_fno[tid] = fno
         if tid not in last_fno or fno > last_fno[tid]:
@@ -210,6 +219,8 @@ def build_tracklet_profiles(
         prof.last_seen = prof.frame_end / fps_safe
         prof.start_center = centers[tid][first_fno[tid]]
         prof.end_center = centers[tid][last_fno[tid]]
+        prof.start_segment = segments[tid][first_fno[tid]]
+        prof.end_segment = segments[tid][last_fno[tid]]
     return [by_id[k] for k in sorted(by_id)]
 
 
@@ -275,36 +286,41 @@ def _temporal_overlap(a: _Cluster, b: _Cluster) -> bool:
     return not a.frames.isdisjoint(b.frames)
 
 
-def _bridging_pair(a: _Cluster, b: _Cluster) -> tuple[float, float, float] | None:
+def _bridging_pair(a: _Cluster, b: _Cluster) -> tuple[float, float, bool] | None:
     """Find the temporally-closest non-overlapping cross-pair of tracklets.
 
-    Returns (gap_s, dist_pixels, dist_limit_pixels) for the bridging pair, or
-    None if every cross-pair overlaps (caller should have already excluded
-    overlap at the cluster level, so this is a defensive None). `dist_limit`
-    uses the spatio-temporal gate `max_dist_frac × diag × (1 + gap)` — but
-    diag is applied by the caller; here we return the raw gap and let the
-    caller compute the limit, so this stays diag-agnostic.
+    Returns (gap_s, dist_pixels, spatially_comparable) for the bridging pair,
+    or None if every cross-pair overlaps. The boolean is false when B29 scene
+    segments differ; such coordinates are unrelated and must never be guessed
+    across. Legacy raw-pixel profiles use ``None`` segments and remain
+    comparable for backward compatibility.
     """
-    best: tuple[float, float] | None = None  # (gap, dist)
+    best: tuple[float, float, bool] | None = None
     for pa in a.profiles:
         for pb in b.profiles:
             if not pa.frames.isdisjoint(pb.frames):
                 continue  # overlap — not a valid bridge
             if pa.last_seen <= pb.first_seen:
                 gap = pb.first_seen - pa.last_seen
+                comparable = (
+                    pa.end_segment is None or pb.start_segment is None or pa.end_segment == pb.start_segment
+                )
                 dist = float(
                     np.hypot(pb.start_center[0] - pa.end_center[0], pb.start_center[1] - pa.end_center[1])
                 )
             else:
                 gap = pa.first_seen - pb.last_seen
+                comparable = (
+                    pb.end_segment is None or pa.start_segment is None or pb.end_segment == pa.start_segment
+                )
                 dist = float(
                     np.hypot(pa.start_center[0] - pb.end_center[0], pa.start_center[1] - pb.end_center[1])
                 )
             if best is None or gap < best[0]:
-                best = (gap, dist)
+                best = (gap, dist, comparable)
     if best is None:
         return None
-    return best[0], best[1], 0.0  # dist_limit filled by caller (needs diag)
+    return best
 
 
 def associate(
@@ -373,7 +389,7 @@ def associate(
                 bridge = _bridging_pair(ca, cb)
                 if bridge is None:
                     continue
-                gap, dist, _ = bridge
+                gap, dist, spatial_comparable = bridge
                 dist_limit = config.p3_max_dist_frac * frame_diag * (1.0 + gap)
 
                 # Record near-merges in the uncertainty band: appearance
@@ -384,6 +400,7 @@ def associate(
                     sim < sim_thresh
                     or gap < config.p3_min_gap_s
                     or gap > config.p3_max_gap_s
+                    or not spatial_comparable
                     or dist > dist_limit
                 )
                 if sim >= uncertain_lo and gate_failed and (aid, bid) not in recorded_blocked:
@@ -392,6 +409,8 @@ def associate(
                         reason = "appearance"
                     elif gap < config.p3_min_gap_s or gap > config.p3_max_gap_s:
                         reason = "gap"
+                    elif not spatial_comparable:
+                        reason = "scene_segment"
                     else:
                         reason = "spatial"
                     audit[aid].append(
@@ -410,6 +429,8 @@ def associate(
                 if sim < sim_thresh:
                     continue
                 if gap < config.p3_min_gap_s or gap > config.p3_max_gap_s:
+                    continue
+                if not spatial_comparable:
                     continue
                 if dist > dist_limit:
                     continue

@@ -1,16 +1,18 @@
 """Artifact store v1: versioned sidecar store for analysis results.
 
-Schema (per architecture report §3):
-  frames/            per frame: frame_no (PK), pts_ms, stab_offset [dx,dy]
+Schema (per architecture report §3 + DECISIONS B29):
+  frames/            P1: frame_no (PK), pts_ms. P2: the same frame key plus
+                     local scene transforms (`scene_to_frame`,
+                     `frame_to_scene`), segment and confidence.
   detections/        P1 output only — raw predict boxes, never tracker-
                      adjusted: frame_no, det_id, xyxy_raw, conf, class,
                      embedding (raw per-detection appearance vector),
                      embedding_method ("osnet" | "hsv")
   tracklets/         P2 output — one row per (track_id, frame): tracklet_id,
                      frame_no, det_id (references back to detections/),
-                     cls, conf, xyxy (tracker/Kalman-adjusted box). Tracker
-                     output lives here; detections/xyxy_raw is never
-                     overwritten by it.
+                     cls, conf, xyxy (tracker/Kalman-adjusted box), local
+                     scene foot point/body height/segment. Tracker output
+                     lives here; detections/xyxy_raw is never overwritten.
   persons/           P3 output — one row per identity: person_id,
                      tracklet_ids [...], embedding_centroid (per method),
                      first_seen/last_seen (video-time), confirmation state,
@@ -22,7 +24,8 @@ Schema (per architecture report §3):
                      annotations/, not here)
   annotations/       Human review layer (Phase 2+: bookmarks, screenshots;
                      Phase 3: confirm/reject on events, operator-notes
-                     import, identity corrections). APPEND-ONLY and stored
+                     import; Phase 5: identity corrections, ground truth).
+                     APPEND-ONLY and stored
                      separately from AI-generated tables so a re-analysis
                      (which rewrites frames/detections/tracklets/persons/
                      events) never destroys human review work. See
@@ -33,8 +36,8 @@ Schema (per architecture report §3):
 Each table is a directory of JSONL files, one per pass. The manifest ties
 everything together and enables bit-identical re-runs.
 
-Trajectories/ (per-person series) is a later-phase concern but the schema is
-designed so it slots in without restructuring.
+Per-person trajectories are read-time projections over tracklets; no duplicate
+trajectory table is stored.
 """
 
 from __future__ import annotations
@@ -313,6 +316,18 @@ class ArtifactStore:
         json_line = json.dumps(data, separators=(",", ":"), ensure_ascii=False) + "\n"
         with open(fpath, "a") as f:
             f.write(json_line)
+
+    def iter_frames(self, pass_name: str):
+        """Yield persisted frame records for one pass in frame order."""
+
+        fpath = self.run_dir / "frames" / f"{pass_name}.jsonl"
+        if not fpath.exists():
+            return
+        with open(fpath) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    yield json.loads(line)
 
     def start_fresh_pass_output(self, table: str, pass_name: str) -> None:
         """Truncate a per-pass JSONL table before a pass that always fully

@@ -143,6 +143,7 @@ class SceneGMC:
     """
 
     def __init__(self, downscale: float = 2.0, seed: int = 42) -> None:
+        self.method = "sparseOptFlow"
         self.downscale = max(float(downscale), 1.0)
         self.seed = int(seed)
         self.accumulator = SceneMotionAccumulator()

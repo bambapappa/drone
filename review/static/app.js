@@ -1663,37 +1663,36 @@ async function renderPersonTrajectory(pid) {
     const pts = j.points || [];
     if (pts.length < 2) { holder.innerHTML = '<span class="dim">För få punkter för en bana.</span>'; return; }
     const isScene = j.coordinate_space === "scene";
-    const margin = 20;
-    const minX = Math.min(...pts.map((p) => p.x)) - margin;
-    const minY = Math.min(...pts.map((p) => p.y)) - margin;
-    const maxX = Math.max(...pts.map((p) => p.x)) + margin;
-    const maxY = Math.max(...pts.map((p) => p.y)) + margin;
-    const W = Math.max(maxX - minX, 40);
-    const H = Math.max(maxY - minY, 40);
     const groups = new Map();
     for (const p of pts) {
       const key = isScene ? p.scene_segment : 0;
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(p);
     }
-    const paths = [...groups.values()].map((group) => {
+    const panels = [...groups.entries()].map(([segment, group]) => {
+      const margin = 20;
+      const minX = Math.min(...group.map((p) => p.x)) - margin;
+      const minY = Math.min(...group.map((p) => p.y)) - margin;
+      const maxX = Math.max(...group.map((p) => p.x)) + margin;
+      const maxY = Math.max(...group.map((p) => p.y)) + margin;
+      const W = Math.max(maxX - minX, 40);
+      const H = Math.max(maxY - minY, 40);
       const poly = group.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
-      return `<polyline points="${poly}" class="pd-traj-line"></polyline>`;
-    }).join("");
-    const markers = [...groups.values()].map((group) => {
       const a = group[0], b = group[group.length - 1];
       const radius = Math.max(4, W / 120);
-      return `<circle cx="${a.x}" cy="${a.y}" r="${radius}" class="pd-traj-start"><title>Start ${fmtT(a.t)}</title></circle>
-        <circle cx="${b.x}" cy="${b.y}" r="${radius}" class="pd-traj-end"><title>Slut ${fmtT(b.t)}</title></circle>`;
+      const label = isScene ? `<span class="dim">Scendel ${segment}</span>` : "";
+      return `${label}<svg viewBox="${minX} ${minY} ${W} ${H}" class="pd-traj-svg" preserveAspectRatio="xMidYMid meet">
+        <rect x="${minX}" y="${minY}" width="${W}" height="${H}" class="pd-traj-frame"></rect>
+        <polyline points="${poly}" class="pd-traj-line"></polyline>
+        <circle cx="${a.x}" cy="${a.y}" r="${radius}" class="pd-traj-start"><title>Start ${fmtT(a.t)}</title></circle>
+        <circle cx="${b.x}" cy="${b.y}" r="${radius}" class="pd-traj-end"><title>Slut ${fmtT(b.t)}</title></circle>
+      </svg>`;
     }).join("");
     const note = isScene
       ? `<span class="dim">Scenkompenserad bana${groups.size > 1 ? ` · ${groups.size} visuellt åtskilda delar` : ""}</span>`
       : '<span class="dim">Äldre analys: bana i bildkoordinater.</span>';
     holder.innerHTML = `
-      <svg viewBox="${minX} ${minY} ${W} ${H}" class="pd-traj-svg" preserveAspectRatio="xMidYMid meet">
-        <rect x="${minX}" y="${minY}" width="${W}" height="${H}" class="pd-traj-frame"></rect>
-        ${paths}${markers}
-      </svg>${note}`;
+      ${panels}${note}`;
   } catch (_) {
     holder.innerHTML = '<span class="dim">Rörelsebanan kunde inte hämtas.</span>';
   }

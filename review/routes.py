@@ -595,12 +595,14 @@ async def get_frames_meta(
     if p1_meta.get("status") != "complete":
         raise HTTPException(status_code=409, detail="P1 har inte körts för den här körningen")
     fps = p1_meta.get("meta", {}).get("fps", 25.0)
-    p2_scene = {
-        int(rec["frame_no"]): rec
-        for rec in store.iter_frames(OfflineOrchestrator.P2_PASS_NAME)
-        if frame_from <= int(rec.get("frame_no", -1))
-        and (frame_to is None or int(rec.get("frame_no", -1)) <= frame_to)
-    }
+    p2_scene: dict[int, dict[str, Any]] = {}
+    for rec in store.iter_frames(OfflineOrchestrator.P2_PASS_NAME):
+        fn = int(rec.get("frame_no", -1))
+        if fn < frame_from:
+            continue
+        if frame_to is not None and fn > frame_to:
+            break
+        p2_scene[fn] = rec
     rows: list[dict[str, Any]] = []
     with open(store.run_dir / "frames" / f"{p1}.jsonl") as f:
         for line in f:
@@ -926,32 +928,34 @@ async def set_hazard_marker(
 
     `x`/`y` are intrinsic frame pixels from the overlay canvas. For a new
     sidecar, `frame_no` selects P2's inverse transform and the server stores
-    the corresponding local scene point as provenance. Older sidecars (or
-    old clients without frame_no) retain fixed-pixel behavior. The next
-    GET .../events immediately recomputes MOT_FARA against the marker.
+    the corresponding local scene point as provenance. Older sidecars without
+    scene transforms retain fixed-pixel behavior. The next GET .../events
+    immediately recomputes MOT_FARA against the marker.
     """
+    store = _open_store(settings, run_id)
+    scene = None
+    scene_supported = False
+    for row in store.iter_frames(OfflineOrchestrator.P2_PASS_NAME):
+        if row.get("frame_to_scene") is not None:
+            scene_supported = True
+        if frame_no is not None and int(row.get("frame_no", -1)) == frame_no:
+            scene = row
+            if row.get("frame_to_scene") is not None:
+                break
+    if scene_supported and (scene is None or scene.get("frame_to_scene") is None):
+        raise HTTPException(status_code=422, detail="faromarkören kräver en giltig ankarruta")
     scene_kwargs: dict[str, Any] = {}
-    if frame_no is not None:
-        store = _open_store(settings, run_id)
-        scene = next(
-            (
-                row
-                for row in store.iter_frames(OfflineOrchestrator.P2_PASS_NAME)
-                if row["frame_no"] == frame_no
-            ),
-            None,
-        )
-        if scene is not None and scene.get("frame_to_scene") is not None:
-            from analysis.scene import transform_point
+    if scene is not None and scene.get("frame_to_scene") is not None:
+        from analysis.scene import transform_point
 
-            scene_x, scene_y = transform_point(scene["frame_to_scene"], (x, y))
-            scene_kwargs = {
-                "anchor_frame": frame_no,
-                "scene_x": scene_x,
-                "scene_y": scene_y,
-                "scene_segment": int(scene["scene_segment"]),
-                "scene_confidence": float(scene.get("scene_confidence") or 0.0),
-            }
+        scene_x, scene_y = transform_point(scene["frame_to_scene"], (x, y))
+        scene_kwargs = {
+            "anchor_frame": frame_no,
+            "scene_x": scene_x,
+            "scene_y": scene_y,
+            "scene_segment": int(scene["scene_segment"]),
+            "scene_confidence": float(scene.get("scene_confidence") or 0.0),
+        }
     return _annotation_store(settings, run_id).set_hazard_marker(x=x, y=y, note=note, **scene_kwargs)
 
 

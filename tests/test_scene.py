@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 
 from analysis.scene import SceneGMC, SceneMotionAccumulator, scene_measurement, transform_point
+from analysis.tracker import Tracker
 
 
 def test_accumulates_camera_motion_and_round_trips_points():
@@ -100,3 +101,43 @@ def test_scene_gmc_starts_new_segment_after_textureless_frame():
     assert gmc.current.segment == 1
     assert not gmc.current.linked
     assert gmc.current.confidence == 0.0
+
+
+def test_prepared_scene_warp_is_consumed_without_advancing_twice():
+    blank = np.zeros((120, 160), dtype=np.uint8)
+    textured = np.random.default_rng(3).integers(0, 256, size=blank.shape, dtype=np.uint8)
+    gmc = SceneGMC(downscale=1.0)
+
+    gmc.prepare(blank)
+    gmc.apply(blank)
+    gmc.prepare(textured)
+    consumed = gmc.apply(textured)
+
+    assert gmc.current is not None
+    assert gmc.current.frame_no == 1
+    assert gmc.current.segment == 1
+    assert not gmc.current.linked
+    assert np.array_equal(consumed, np.eye(2, 3))
+
+
+def test_segment_reset_clears_associations_without_reusing_tracker_session():
+    class FakeBotSort:
+        def __init__(self):
+            self.tracked_stracks = [object()]
+            self.lost_stracks = [object()]
+            self.removed_stracks = [object()]
+            self.frame_id = 7
+            self.kalman_filter = object()
+
+        def get_kalmanfilter(self):
+            return "fresh"
+
+    tracker = Tracker.__new__(Tracker)
+    tracker._tracker = FakeBotSort()
+    tracker._reset_association_state()
+
+    assert tracker._tracker.tracked_stracks == []
+    assert tracker._tracker.lost_stracks == []
+    assert tracker._tracker.removed_stracks == []
+    assert tracker._tracker.kalman_filter == "fresh"
+    assert tracker._tracker.frame_id == 7

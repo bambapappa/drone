@@ -150,6 +150,7 @@ class SceneGMC:
         self._prev_gray: np.ndarray | None = None
         self._prev_points: np.ndarray | None = None
         self._frame_no = -1
+        self._prepared_warp: np.ndarray | None = None
         self._feature_params = {
             "maxCorners": 1000,
             "qualityLevel": 0.01,
@@ -164,8 +165,17 @@ class SceneGMC:
             "criteria": (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
         }
 
+    def prepare(self, raw_frame: np.ndarray) -> np.ndarray:
+        self._prepared_warp = self._advance(raw_frame)
+        return self._prepared_warp
+
     def apply(self, raw_frame: np.ndarray, detections: list | None = None) -> np.ndarray:
-        del detections  # Interface compatibility; sparse flow uses scene texture.
+        del detections
+        if self._prepared_warp is not None:
+            return self._prepared_warp
+        return self._advance(raw_frame)
+
+    def _advance(self, raw_frame: np.ndarray) -> np.ndarray:
         self._frame_no += 1
         gray = cv2.cvtColor(raw_frame, cv2.COLOR_BGR2GRAY) if raw_frame.ndim == 3 else raw_frame
         if self.downscale > 1.0:

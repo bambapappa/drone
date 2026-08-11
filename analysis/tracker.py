@@ -48,6 +48,12 @@ class Tracker:
         self.scene_gmc = SceneGMC(seed=seed)
         self._tracker.gmc = self.scene_gmc
 
+    def _reset_association_state(self) -> None:
+        self._tracker.tracked_stracks = []
+        self._tracker.lost_stracks = []
+        self._tracker.removed_stracks = []
+        self._tracker.kalman_filter = self._tracker.get_kalmanfilter()
+
     def update(self, records: list[dict[str, Any]], frame_bgr: np.ndarray) -> list[TrackedBox]:
         """Advance the tracker by one frame.
 
@@ -70,6 +76,9 @@ class Tracker:
                 dtype=torch.float32,
             )
         det = Boxes(data, orig_shape=(h, w)).cpu().numpy()
+        self.scene_gmc.prepare(frame_bgr)
+        if self.scene_gmc.current is not None and not self.scene_gmc.current.linked:
+            self._reset_association_state()
         tracks = self._tracker.update(det, frame_bgr)
 
         out: list[TrackedBox] = []

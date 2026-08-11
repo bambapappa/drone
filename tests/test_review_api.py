@@ -495,13 +495,14 @@ async def test_placing_hazard_marker_recomputes_mot_fara(settings, moving_run_id
 
     r = await client.post(
         f"/api/runs/{moving_run_id}/hazard-marker",
-        data={"x": "2000", "y": "140"},
+        data={"x": "2000", "y": "140", "frame_no": "0"},
     )
     assert r.status_code == 201
     assert r.json()["x"] == 2000.0
 
     r = await client.get(f"/api/runs/{moving_run_id}/hazard-marker")
-    assert r.json() == {"active": True, "x": 2000.0, "y": 140.0, "note": None}
+    assert r.json()["coordinate_space"] == "scene"
+    assert r.json()["anchor_frame"] == 0
 
     r = await client.get(f"/api/runs/{moving_run_id}/events")
     body = r.json()
@@ -526,6 +527,20 @@ async def test_scene_marker_is_derived_server_side_from_anchor_frame(settings, m
     assert marker["scene_x"] == 400.0
 
 
+async def test_scene_marker_requires_a_valid_anchor_frame(settings, moving_run_id, client):
+    r = await client.post(
+        f"/api/runs/{moving_run_id}/hazard-marker",
+        data={"x": "500", "y": "140"},
+    )
+    assert r.status_code == 422
+
+    r = await client.post(
+        f"/api/runs/{moving_run_id}/hazard-marker",
+        data={"x": "500", "y": "140", "frame_no": "999"},
+    )
+    assert r.status_code == 422
+
+
 async def test_frames_meta_includes_persisted_scene_transform(settings, moving_run_id, client):
     r = await client.get(
         f"/api/runs/{moving_run_id}/frames/meta",
@@ -537,8 +552,32 @@ async def test_frames_meta_includes_persisted_scene_transform(settings, moving_r
     assert frame["scene_to_frame"][0][2] == 100.0
 
 
+async def test_frames_meta_stops_reading_scene_rows_after_requested_window(
+    settings, moving_run_id, client, monkeypatch
+):
+    original = ArtifactStore.iter_frames
+    p2 = OfflineOrchestrator.P2_PASS_NAME
+    seeded = list(original(ArtifactStore(settings.output_dir, "vh-moving", "ch-moving", moving_run_id), p2))
+
+    def limited_rows(self, pass_name):
+        if pass_name != p2:
+            yield from original(self, pass_name)
+            return
+        yield seeded[0]
+        yield seeded[1]
+        raise AssertionError("scene rows beyond the requested window were read")
+
+    monkeypatch.setattr(ArtifactStore, "iter_frames", limited_rows)
+    r = await client.get(f"/api/runs/{moving_run_id}/frames/meta", params={"from": 0, "to": 0})
+
+    assert r.status_code == 200
+    assert [row["frame_no"] for row in r.json()["frames"]] == [0]
+
+
 async def test_clearing_hazard_marker_reverts_to_engine_output(settings, moving_run_id, client):
-    await client.post(f"/api/runs/{moving_run_id}/hazard-marker", data={"x": "2000", "y": "140"})
+    await client.post(
+        f"/api/runs/{moving_run_id}/hazard-marker", data={"x": "2000", "y": "140", "frame_no": "0"}
+    )
     r = await client.get(f"/api/runs/{moving_run_id}/events")
     assert r.json()["count"] >= 1
 
@@ -557,10 +596,16 @@ async def test_moving_marker_twice_to_same_position_is_deterministic(settings, m
         r = await client.get(f"/api/runs/{moving_run_id}/events")
         return r.json()["events"]
 
-    await client.post(f"/api/runs/{moving_run_id}/hazard-marker", data={"x": "2000", "y": "140"})
+    await client.post(
+        f"/api/runs/{moving_run_id}/hazard-marker", data={"x": "2000", "y": "140", "frame_no": "0"}
+    )
     first = await events_snapshot()
-    await client.post(f"/api/runs/{moving_run_id}/hazard-marker", data={"x": "-500", "y": "400"})
-    await client.post(f"/api/runs/{moving_run_id}/hazard-marker", data={"x": "2000", "y": "140"})
+    await client.post(
+        f"/api/runs/{moving_run_id}/hazard-marker", data={"x": "-500", "y": "400", "frame_no": "0"}
+    )
+    await client.post(
+        f"/api/runs/{moving_run_id}/hazard-marker", data={"x": "2000", "y": "140", "frame_no": "0"}
+    )
     back = await events_snapshot()
     assert first == back
 

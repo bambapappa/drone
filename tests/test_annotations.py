@@ -195,6 +195,22 @@ class TestHazardMarker:
         assert row["y"] == 340.2
         assert row["note"] == "vid ladan"
 
+    def test_scene_anchored_marker_keeps_anchor_provenance(self, store: AnnotationStore):
+        row = store.set_hazard_marker(
+            x=520.0,
+            y=340.0,
+            anchor_frame=125,
+            scene_x=400.0,
+            scene_y=300.0,
+            scene_segment=2,
+            scene_confidence=0.84,
+        )
+        assert row["anchor_frame"] == 125
+        assert row["scene_x"] == 400.0
+        assert row["scene_y"] == 300.0
+        assert row["scene_segment"] == 2
+        assert row["scene_confidence"] == 0.84
+
     def test_get_hazard_marker_returns_latest(self, store: AnnotationStore):
         store.set_hazard_marker(x=100.0, y=100.0)
         store.set_hazard_marker(x=200.0, y=250.0)

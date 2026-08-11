@@ -72,7 +72,7 @@ const state = {
   activeEventId: null,
   layers: { boxes: true, ids: true, status: true, trails: false, heatmap: false },
   _reviewPauseHandler: null, // current jumpToEvent auto-pause listener, if any
-  hazardMarker: { active: false, x: null, y: null }, // Phase 4 retroactive marker
+  hazardMarker: { active: false, x: null, y: null }, // Phase 4/B29 scene-anchored marker
   hazardPlacementArmed: false, // true while waiting for the next canvas click
   // Phase 5. `features` mirrors GET /api/features; until the fetch lands we
   // assume everything on (matching the server defaults) so a failed fetch
@@ -86,7 +86,7 @@ const state = {
   corrections: [],         // live identity-correction ops
   correctionsSkipped: [],  // ops the projection couldn't apply
   gtEntries: [],           // ground-truth ("facit") rows
-  heatmap: { canvas: null, loading: false, personId: null }, // offscreen render cache
+  heatmap: { canvas: null, data: null, loading: false, personId: null }, // raw canvas or B29 scene cells
   clipRecording: false,    // one clip export at a time
 };
 
@@ -241,7 +241,7 @@ async function loadRun(rid) {
   // disabled feature's endpoint answers 404 and the pane simply stays in
   // its empty state (the tab itself is hidden by applyFeatureGates).
   state.selectedPersonId = null;
-  state.heatmap = { canvas: null, loading: false, personId: null };
+  state.heatmap = { canvas: null, data: null, loading: false, personId: null };
   $("#person-detail").classList.add("hidden");
   await Promise.all([refreshPersons(), refreshGroundTruth()]);
   renderRunCompareOptions();
@@ -302,7 +302,7 @@ function syncCanvasSize() {
   if (canvas.height !== video.videoHeight) canvas.height = video.videoHeight;
 }
 
-function currentFrameNo() {
+function currentFrameRecord() {
   // Map video.currentTime (media seconds) → nearest frame_no using the PTS
   // index. pts_ms values come from the ingest decode pass and are the
   // ground-truth sync; we do a linear scan (the index is sorted and the
@@ -316,7 +316,11 @@ function currentFrameNo() {
     if (d < bestDelta) { bestDelta = d; best = state.frames[i]; }
     else if (state.frames[i].pts_ms > tMs) break; // sorted, past the target
   }
-  return best.frame_no;
+  return best;
+}
+
+function currentFrameNo() {
+  return currentFrameRecord()?.frame_no ?? null;
 }
 
 async function fetchBoxesForFrame(frameNo) {
@@ -373,12 +377,13 @@ async function drawOverlay() {
   if (!video.readyState || video.readyState < 2) return;
   syncCanvasSize();
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  if (state.layers.heatmap) drawHeatmapLayer(canvas.width, canvas.height);
-  drawHazardMarker(canvas.width, canvas.height);
 
   await ensureFramesWindow(video.currentTime * 1000);
-  const frameNo = currentFrameNo();
+  const frameRecord = currentFrameRecord();
+  const frameNo = frameRecord?.frame_no ?? null;
   if (frameNo == null) { frameInfo.classList.add("hidden"); return; }
+  if (state.layers.heatmap) drawHeatmapLayer(canvas.width, canvas.height, frameRecord);
+  drawHazardMarker(canvas.width, canvas.height, frameRecord);
   if (frameNo !== lastDrawnFrame) {
     frameInfo.textContent = `ruta ${frameNo}`;
     frameInfo.classList.remove("hidden");
@@ -519,12 +524,53 @@ function drawActiveBadges(events, W, H) {
   ctx.textAlign = "left"; // reset
 }
 
-function drawHazardMarker(W, H) {
-  // The manually placed hazard marker (Phase 4, report §5.1) — same pixel
-  // space as tracklet boxes, drawn as a small pin so the reviewer always
-  // sees where MOT_FARA is currently being computed against.
+function projectPoint(matrix, x, y) {
+  if (!matrix || matrix.length !== 3) return null;
+  const px = matrix[0][0] * x + matrix[0][1] * y + matrix[0][2];
+  const py = matrix[1][0] * x + matrix[1][1] * y + matrix[1][2];
+  const pw = matrix[2][0] * x + matrix[2][1] * y + matrix[2][2];
+  if (!Number.isFinite(px) || !Number.isFinite(py) || !Number.isFinite(pw) || Math.abs(pw) < 1e-9) return null;
+  return { x: px / pw, y: py / pw };
+}
+
+function drawSceneWarning(text, W, H) {
+  ctx.save();
+  ctx.font = `bold ${Math.max(12, W / 70)}px system-ui, sans-serif`;
+  const pad = 8;
+  const width = ctx.measureText(text).width + pad * 2;
+  ctx.fillStyle = "rgba(12,16,20,.82)";
+  ctx.fillRect((W - width) / 2, H - 42, width, 30);
+  ctx.fillStyle = COLORS.toward_danger;
+  ctx.fillText(text, (W - width) / 2 + pad, H - 20);
+  ctx.restore();
+}
+
+function hazardPosition(frameRecord) {
+  const marker = state.hazardMarker;
+  if (marker.scene_x == null || marker.scene_y == null) {
+    return { state: "visible", x: marker.x, y: marker.y, legacy: true };
+  }
+  if (!frameRecord?.scene_to_frame || frameRecord.scene_segment !== marker.scene_segment) {
+    return { state: "unknown" };
+  }
+  const point = projectPoint(frameRecord.scene_to_frame, marker.scene_x, marker.scene_y);
+  if (!point) return { state: "unknown" };
+  const inside = point.x >= 0 && point.x <= canvas.width && point.y >= 0 && point.y <= canvas.height;
+  return { state: inside ? "visible" : "offscreen", ...point };
+}
+
+function drawHazardMarker(W, H, frameRecord) {
   if (!state.hazardMarker.active) return;
-  const { x, y } = state.hazardMarker;
+  const position = hazardPosition(frameRecord);
+  if (position.state === "unknown") {
+    drawSceneWarning("FARANS POSITION OSÄKER — MARKERA IGEN", W, H);
+    return;
+  }
+  let { x, y } = position;
+  if (position.state === "offscreen") {
+    x = Math.max(14, Math.min(W - 14, x));
+    y = Math.max(14, Math.min(H - 14, y));
+  }
   const r = Math.max(6, W / 90);
   ctx.beginPath();
   ctx.arc(x, y, r, 0, Math.PI * 2);
@@ -540,7 +586,7 @@ function drawHazardMarker(W, H) {
   ctx.font = `bold ${Math.max(11, W / 70)}px system-ui, sans-serif`;
   ctx.textBaseline = "bottom";
   ctx.fillStyle = COLORS.toward_danger;
-  ctx.fillText("FAROMARKÖR", x + r + 4, y + r);
+  ctx.fillText(position.state === "offscreen" ? "FARA UTANFÖR BILD" : "FAROMARKÖR", x + r + 4, y + r);
 }
 
 // =====================================================================
@@ -572,14 +618,15 @@ function setLayer(key, on) {
 // image every tick, so the per-frame cost is one drawImage.
 async function ensureHeatmap(personId) {
   if (!state.runId || state.heatmap.loading) return;
-  if (state.heatmap.canvas && state.heatmap.personId === personId) return;
+  if (state.heatmap.data && state.heatmap.personId === personId) return;
   state.heatmap.loading = true;
   try {
     const q = personId != null ? `?person_id=${personId}` : "";
     const r = await fetch(`/api/runs/${state.runId}/heatmap${q}`);
     if (!r.ok) { toast("Kunde inte hämta värmekartan", "error"); return; }
     const hm = await r.json();
-    state.heatmap.canvas = renderHeatmapCanvas(hm);
+    state.heatmap.data = hm;
+    state.heatmap.canvas = hm.coordinate_space === "scene" ? null : renderHeatmapCanvas(hm);
     state.heatmap.personId = personId;
     lastDrawnFrame = null;
   } catch (_) {
@@ -612,16 +659,58 @@ function renderHeatmapCanvas(hm) {
   return off;
 }
 
-function drawHeatmapLayer(W, H) {
+function heatColor(v) {
+  const red = Math.round(255 * Math.min(1, v * 2));
+  const green = Math.round(v < 0.5 ? 255 * v * 2 * 0.8 : 255 * (1 - v) * 1.6);
+  const blue = Math.round(255 * Math.max(0, 1 - v * 2));
+  return `rgba(${red},${green},${blue},${(0.24 + 0.58 * v).toFixed(3)})`;
+}
+
+function drawSceneHeatmap(hm, frameRecord, W, H) {
+  if (!frameRecord?.scene_to_frame) return "unknown";
+  const segment = (hm.segments || []).find((item) => item.segment === frameRecord.scene_segment);
+  if (!segment) return "unknown";
+  let projected = false;
+  let rendered = false;
+  for (const cell of segment.cells || []) {
+    const center = projectPoint(frameRecord.scene_to_frame, cell.x, cell.y);
+    const edge = projectPoint(frameRecord.scene_to_frame, cell.x + cell.width / 2, cell.y);
+    if (!center || !edge) continue;
+    projected = true;
+    if (center.x < -40 || center.x > W + 40 || center.y < -40 || center.y > H + 40) continue;
+    const radius = Math.max(4, Math.min(60, Math.hypot(edge.x - center.x, edge.y - center.y)));
+    const v = hm.max_s ? cell.seconds / hm.max_s : 0;
+    ctx.beginPath();
+    ctx.arc(center.x, center.y, radius, 0, Math.PI * 2);
+    ctx.fillStyle = heatColor(v);
+    ctx.fill();
+    rendered = true;
+  }
+  if (rendered) return "shown";
+  return projected ? "offscreen" : "unknown";
+}
+
+function drawHeatmapLayer(W, H, frameRecord) {
+  const hm = state.heatmap.data;
   const off = state.heatmap.canvas;
-  if (!off) return;
+  if (!hm && !off) return;
   ctx.save();
-  ctx.imageSmoothingEnabled = true;
-  ctx.drawImage(off, 0, 0, W, H);
+  let heatmapState = "shown";
+  if (hm?.coordinate_space === "scene") {
+    heatmapState = drawSceneHeatmap(hm, frameRecord, W, H);
+  } else if (off) {
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(off, 0, 0, W, H);
+  }
   // Always say WHICH map is on screen — a per-person map looks like a
   // sparse whole-run map otherwise.
   const pid = state.heatmap.personId;
-  const caption = pid != null ? `Värmekarta: person P${pid}` : "Värmekarta: hela körningen";
+  const base = pid != null ? `Värmekarta: person P${pid}` : "Värmekarta: hela körningen";
+  const caption = heatmapState === "shown"
+    ? base
+    : heatmapState === "offscreen"
+      ? `${base} — utanför bild`
+      : `${base} — scenposition okänd`;
   ctx.font = `bold ${Math.max(11, W / 80)}px system-ui, sans-serif`;
   ctx.textBaseline = "bottom";
   const pad = Math.max(6, W / 160);
@@ -779,7 +868,7 @@ function renderTimeline() {
   });
 
   $("#timeline-legend").textContent = state.hazardMarker.active
-    ? `faromarkör placerad (${state.hazardMarker.x.toFixed(0)}, ${state.hazardMarker.y.toFixed(0)})`
+    ? (state.hazardMarker.scene_x != null ? "faromarkör förankrad i lokal scen" : "äldre fast faromarkör")
     : "";
 }
 
@@ -792,7 +881,7 @@ async function refreshHazardMarker() {
   if (!state.runId) return;
   try {
     const r = await fetch(`/api/runs/${state.runId}/hazard-marker`).then((res) => res.json());
-    state.hazardMarker = r.active ? { active: true, x: r.x, y: r.y } : { active: false, x: null, y: null };
+    state.hazardMarker = r.active ? { ...r, active: true } : { active: false, x: null, y: null };
   } catch (_) {
     state.hazardMarker = { active: false, x: null, y: null };
   }
@@ -811,14 +900,16 @@ function updateHazardMarkerButtons() {
   clearBtn.classList.toggle("hidden", !state.hazardMarker.active);
 }
 
-async function setHazardMarker(x, y) {
+async function setHazardMarker(x, y, frameNo) {
+  const body = { x: String(x), y: String(y) };
+  if (frameNo != null) body.frame_no = String(frameNo);
   const r = await fetch(`/api/runs/${state.runId}/hazard-marker`, {
     method: "POST",
-    body: new URLSearchParams({ x: String(x), y: String(y) }),
+    body: new URLSearchParams(body),
   });
   if (!r.ok) { toast("Kunde inte flytta faromarkören", "error"); return; }
   const row = await r.json();
-  state.hazardMarker = { active: true, x: row.x, y: row.y };
+  state.hazardMarker = { ...row, active: true };
   updateHazardMarkerButtons();
   toast("Faromarkör flyttad — MOT FARA omberäknad", "success");
   await reloadEventsAfterHazardChange();
@@ -866,7 +957,7 @@ $("#stage").addEventListener("click", (e) => {
   const y = (dispY / rect.height) * canvas.height;
   state.hazardPlacementArmed = false;
   updateHazardMarkerButtons();
-  setHazardMarker(x, y);
+  setHazardMarker(x, y, currentFrameNo());
 });
 
 // =====================================================================
@@ -1580,17 +1671,37 @@ async function renderPersonTrajectory(pid) {
     if (state.selectedPersonId !== pid) return; // selection changed mid-fetch
     const pts = j.points || [];
     if (pts.length < 2) { holder.innerHTML = '<span class="dim">För få punkter för en bana.</span>'; return; }
-    const W = video.videoWidth || Math.max(...pts.map((p) => p.x)) + 20;
-    const H = video.videoHeight || Math.max(...pts.map((p) => p.y)) + 20;
-    const poly = pts.map((p) => `${p.x.toFixed(0)},${p.y.toFixed(0)}`).join(" ");
-    const a = pts[0], b = pts[pts.length - 1];
-    holder.innerHTML = `
-      <svg viewBox="0 0 ${W} ${H}" class="pd-traj-svg" preserveAspectRatio="xMidYMid meet">
-        <rect x="0" y="0" width="${W}" height="${H}" class="pd-traj-frame"></rect>
+    const isScene = j.coordinate_space === "scene";
+    const groups = new Map();
+    for (const p of pts) {
+      const key = isScene ? p.scene_segment : 0;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(p);
+    }
+    const panels = [...groups.entries()].map(([segment, group]) => {
+      const margin = 20;
+      const minX = Math.min(...group.map((p) => p.x)) - margin;
+      const minY = Math.min(...group.map((p) => p.y)) - margin;
+      const maxX = Math.max(...group.map((p) => p.x)) + margin;
+      const maxY = Math.max(...group.map((p) => p.y)) + margin;
+      const W = Math.max(maxX - minX, 40);
+      const H = Math.max(maxY - minY, 40);
+      const poly = group.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
+      const a = group[0], b = group[group.length - 1];
+      const radius = Math.max(4, W / 120);
+      const label = isScene ? `<span class="dim">Scendel ${segment}</span>` : "";
+      return `${label}<svg viewBox="${minX} ${minY} ${W} ${H}" class="pd-traj-svg" preserveAspectRatio="xMidYMid meet">
+        <rect x="${minX}" y="${minY}" width="${W}" height="${H}" class="pd-traj-frame"></rect>
         <polyline points="${poly}" class="pd-traj-line"></polyline>
-        <circle cx="${a.x}" cy="${a.y}" r="${Math.max(4, W / 120)}" class="pd-traj-start"><title>Start ${fmtT(a.t)}</title></circle>
-        <circle cx="${b.x}" cy="${b.y}" r="${Math.max(4, W / 120)}" class="pd-traj-end"><title>Slut ${fmtT(b.t)}</title></circle>
+        <circle cx="${a.x}" cy="${a.y}" r="${radius}" class="pd-traj-start"><title>Start ${fmtT(a.t)}</title></circle>
+        <circle cx="${b.x}" cy="${b.y}" r="${radius}" class="pd-traj-end"><title>Slut ${fmtT(b.t)}</title></circle>
       </svg>`;
+    }).join("");
+    const note = isScene
+      ? `<span class="dim">Scenkompenserad bana${groups.size > 1 ? ` · ${groups.size} visuellt åtskilda delar` : ""}</span>`
+      : '<span class="dim">Äldre analys: bana i bildkoordinater.</span>';
+    holder.innerHTML = `
+      ${panels}${note}`;
   } catch (_) {
     holder.innerHTML = '<span class="dim">Rörelsebanan kunde inte hämtas.</span>';
   }
@@ -1732,7 +1843,7 @@ async function reloadAfterCorrectionChange() {
   // reviewer had chosen when that person still exists.
   const heatPerson = state.heatmap.personId;
   state.boxesByFrame = null;
-  state.heatmap = { canvas: null, loading: false, personId: null };
+  state.heatmap = { canvas: null, data: null, loading: false, personId: null };
   const evRes = await fetch(`/api/runs/${state.runId}/events`).then((r) => r.json()).catch(() => null);
   if (evRes) state.events = evRes.events || [];
   await refreshPersons();

@@ -67,24 +67,22 @@ def recompute_mot_fara(
     store: ArtifactStore,
     person_by_tracklet: dict[int, int],
     fps: float,
-    hazard_x: float,
-    hazard_y: float,
+    hazard_x: float | None = None,
+    hazard_y: float | None = None,
+    hazard_scene: tuple[float, float] | None = None,
+    hazard_segment: int | None = None,
 ) -> list[dict[str, Any]]:
     """Re-derive MOT_FARA events against a manually placed hazard position.
 
     Reads P2's already-persisted tracklets (the same table the engine's own
-    P5 pass reads) and reruns BehaviorAnalyzer's toward-danger logic with a
-    *fixed* danger point in frame-pixel space (the same convention the
-    overlay canvas already draws in — see review/static/app.js's note that
-    artifact boxes are pixel space with no normalization). Pure and
-    deterministic given (tracklets, hazard position, config): moving the
-    marker back to an already-visited position reproduces byte-identical
-    events.
+    P5 pass reads) and reruns BehaviorAnalyzer's toward-danger logic. B29
+    sidecars use one fixed local scene point in its linked segment; older
+    sidecars use the original fixed frame-pixel point. Pure and deterministic
+    given (tracklets, hazard position, config): moving the marker back to an
+    already-visited position reproduces byte-identical events.
 
-    `frame_w`/`frame_h` aren't needed here — derive_behavior_events only uses
-    them (via derive_events) to convert SituationAnalyzer's *normalized*
-    fire/smoke position to pixels; a manually placed marker is already given
-    in pixel space (the reviewer clicks the overlay canvas directly).
+    `frame_w`/`frame_h` aren't needed here — derive_behavior_events receives
+    either already-converted scene coordinates or the legacy pixel point.
 
     Returns only the MOT_FARA subset (as plain dicts, `Event.to_dict()`
     shape) — STILLA/IRRATIONELL/HAZARD are unaffected by the danger point
@@ -92,6 +90,12 @@ def recompute_mot_fara(
     """
     config = _config_from_manifest(store)
     tracklet_rows = list(store.iter_tracklets(OfflineOrchestrator.P2_PASS_NAME))
+    danger_scene_by_segment = None
+    if hazard_scene is not None and hazard_segment is not None:
+        danger_scene_by_segment = {int(hazard_segment): hazard_scene}
+    danger_px = None
+    if hazard_x is not None and hazard_y is not None:
+        danger_px = (hazard_x, hazard_y)
     events = derive_behavior_events(
         tracklet_rows,
         person_by_tracklet=person_by_tracklet,
@@ -99,6 +103,7 @@ def recompute_mot_fara(
         frame_w=0,
         frame_h=0,
         config=config,
-        danger_px=(hazard_x, hazard_y),
+        danger_px=danger_px,
+        danger_scene_by_segment=danger_scene_by_segment,
     )
     return [ev.to_dict() for ev in events if ev.category == CATEGORY_MOT_FARA]

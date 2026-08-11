@@ -97,6 +97,20 @@ class TestOcclusionReentry:
         # dist (55->56 = 1 px) must be under the limit
         assert m["dist"] <= m["dist_limit"]
 
+    def test_unlinked_scene_segments_are_not_spatially_compared(self):
+        cfg = OfflineConfig()
+        a = _profile(1, 0, 9, RED, start_center=(50, 100), end_center=(55, 100))
+        b = _profile(2, 20, 29, RED, start_center=(56, 100), end_center=(60, 100))
+        a.start_segment = a.end_segment = 0
+        b.start_segment = b.end_segment = 1
+
+        res = associate([a, b], cfg, DIAG)
+
+        assert len(res.persons) == 2
+        assert any(
+            audit["rule"] == "blocked:scene_segment" for person in res.persons for audit in person.assoc_audit
+        )
+
 
 class TestTemporalOverlapExclusion:
     """Two tracklets visible in the same frame are NEVER the same person — the

@@ -29,9 +29,11 @@ class TrackedBox:
 
 
 class Tracker:
-    def __init__(self, tracker_yaml: str):
+    def __init__(self, tracker_yaml: str, seed: int = 42):
         from ultralytics.trackers.bot_sort import BOTSORT
         from ultralytics.utils import YAML, IterableSimpleNamespace
+
+        from analysis.scene import SceneGMC
 
         tcfg = YAML.load(tracker_yaml)
         # Appearance ReID is off at the tracker level: P2 associates
@@ -40,6 +42,17 @@ class Tracker:
         # the person registry's job (Phase 3), not this pass's.
         tcfg["with_reid"] = False
         self._tracker = BOTSORT(IterableSimpleNamespace(**tcfg))
+        # B29: BoT-SORT and the persisted scene layer share this exact GMC
+        # estimate. A second camera-motion implementation would recreate the
+        # dual-source drift problem the artifact seam is meant to prevent.
+        self.scene_gmc = SceneGMC(seed=seed)
+        self._tracker.gmc = self.scene_gmc
+
+    def _reset_association_state(self) -> None:
+        self._tracker.tracked_stracks = []
+        self._tracker.lost_stracks = []
+        self._tracker.removed_stracks = []
+        self._tracker.kalman_filter = self._tracker.get_kalmanfilter()
 
     def update(self, records: list[dict[str, Any]], frame_bgr: np.ndarray) -> list[TrackedBox]:
         """Advance the tracker by one frame.
@@ -63,6 +76,9 @@ class Tracker:
                 dtype=torch.float32,
             )
         det = Boxes(data, orig_shape=(h, w)).cpu().numpy()
+        self.scene_gmc.prepare(frame_bgr)
+        if self.scene_gmc.current is not None and not self.scene_gmc.current.linked:
+            self._reset_association_state()
         tracks = self._tracker.update(det, frame_bgr)
 
         out: list[TrackedBox] = []

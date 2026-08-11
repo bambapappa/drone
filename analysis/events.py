@@ -151,6 +151,7 @@ def derive_behavior_events(
     frame_h: int,
     config: OfflineConfig,
     danger_px: tuple[float, float] | None = None,
+    danger_scene_by_segment: dict[int, tuple[float, float]] | None = None,
 ) -> list[Event]:
     """Replay BehaviorAnalyzer over a tracklet table and diff into events.
 
@@ -190,18 +191,37 @@ def derive_behavior_events(
     timelines: dict[int, list[tuple[int, str, bool, float]]] = defaultdict(list)
 
     for tid in sorted(by_tracklet.keys()):
+        previous_segment: int | None = None
         for row in by_tracklet[tid]:
             frame_no = int(row["frame_no"])
             x0, y0, x1, y1 = (float(v) for v in row["xyxy"])
+            raw_box_h = max(y1 - y0, 1.0)
             # stab_pos = foot-center (the live pipeline's convention); body
             # height in pixels for body-height-normalized speed. Width/height
             # for the aspect-ratio "prone" check.
-            stab_pos = ((x0 + x1) / 2.0, y1)
-            box_h = max(y1 - y0, 1.0)
-            aspect = max((x1 - x0) / box_h, 0.0)
+            segment = int(row["scene_segment"]) if row.get("scene_segment") is not None else None
+            if row.get("scene_pos") is not None:
+                stab_pos = tuple(float(v) for v in row["scene_pos"])
+                box_h = max(float(row.get("scene_box_h", raw_box_h)), 1.0)
+            else:
+                stab_pos = ((x0 + x1) / 2.0, y1)
+                box_h = raw_box_h
+            if previous_segment is not None and segment is not None and segment != previous_segment:
+                # B29 local maps are unrelated across a visual loss. Reset the
+                # motion history so the coordinate jump cannot become a sprint,
+                # MOT_FARA, or other fabricated behavior.
+                analyzer.drop_inactive(set())
+            previous_segment = segment
+            # Prone posture is an image-box shape measurement.  Keep both
+            # width and height in raw frame pixels; scene_box_h is only for
+            # motion normalization and may include camera scale/rotation.
+            aspect = max((x1 - x0) / raw_box_h, 0.0)
             t = frame_no / fps
+            danger = danger_px
+            if danger_scene_by_segment is not None and segment is not None:
+                danger = danger_scene_by_segment.get(segment)
             status, prone, speed = analyzer.update(
-                pid=tid, t=t, stab_pos=stab_pos, box_h=box_h, aspect=aspect, danger_stab=danger_px
+                pid=tid, t=t, stab_pos=stab_pos, box_h=box_h, aspect=aspect, danger_stab=danger
             )
             timelines[tid].append((frame_no, status, prone, speed))
         # Free analyzer state for this tracklet so it cannot bleed into the
@@ -492,6 +512,7 @@ def derive_events(
     frame_h: int,
     config: OfflineConfig,
     ignore_regions: list[tuple[float, float, float, float]] | None = None,
+    scene_frames: dict[int, dict[str, Any]] | None = None,
 ) -> list[Event]:
     """Top-level P5 derivation: behavior + situation → events.
 
@@ -531,6 +552,7 @@ def derive_events(
     fire_timeline: list[tuple[int, bool, float]] = []
     smoke_timeline: list[tuple[int, bool, float]] = []
     danger_px_by_frame: dict[int, tuple[float, float] | None] = {}
+    danger_scene_points: dict[int, list[tuple[float, float]]] = defaultdict(list)
 
     frame_no = 0
     for frame in frames:
@@ -549,6 +571,13 @@ def derive_events(
             else:
                 danger_px_by_frame[frame_no] = None
         smoke_timeline.append((frame_no, state.smoke is not None, state.smoke.area if state.smoke else 0.0))
+        danger_here = danger_px_by_frame[frame_no]
+        scene_rec = (scene_frames or {}).get(frame_no)
+        if danger_here is not None and scene_rec and scene_rec.get("frame_to_scene") is not None:
+            from analysis.scene import transform_point
+
+            segment = int(scene_rec["scene_segment"])
+            danger_scene_points[segment].append(transform_point(scene_rec["frame_to_scene"], danger_here))
         frame_no += 1
 
     # Behavior events: one derivation per contiguous run of same-danger-state
@@ -570,6 +599,15 @@ def derive_events(
             sum(p[1] for p in present_dangers) / len(present_dangers),
         )
 
+    danger_scene_by_segment = {
+        segment: (
+            sum(point[0] for point in points) / len(points),
+            sum(point[1] for point in points) / len(points),
+        )
+        for segment, points in danger_scene_points.items()
+        if points
+    }
+
     behavior_events = derive_behavior_events(
         tracklet_rows,
         person_by_tracklet=person_by_tracklet,
@@ -577,7 +615,8 @@ def derive_events(
         frame_w=frame_w,
         frame_h=frame_h,
         config=config,
-        danger_px=mean_danger,
+        danger_px=None if danger_scene_by_segment else mean_danger,
+        danger_scene_by_segment=danger_scene_by_segment or None,
     )
 
     # IRRATIONELL (Phase 4, report §4): the same tracklet trajectories, run

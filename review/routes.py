@@ -312,8 +312,10 @@ def _apply_hazard_override(
         store,
         person_by_tracklet=person_by_tracklet,
         fps=_run_fps(store),
-        hazard_x=marker["x"],
-        hazard_y=marker["y"],
+        hazard_x=None if marker.get("scene_x") is not None else marker["x"],
+        hazard_y=None if marker.get("scene_y") is not None else marker["y"],
+        hazard_scene=(marker["scene_x"], marker["scene_y"]) if marker.get("scene_x") is not None else None,
+        hazard_segment=marker.get("scene_segment"),
     )
     original_mot_fara = [e for e in events if e.get("category") == CATEGORY_MOT_FARA]
     kept = [e for e in events if e.get("category") != CATEGORY_MOT_FARA]
@@ -593,6 +595,14 @@ async def get_frames_meta(
     if p1_meta.get("status") != "complete":
         raise HTTPException(status_code=409, detail="P1 har inte körts för den här körningen")
     fps = p1_meta.get("meta", {}).get("fps", 25.0)
+    p2_scene: dict[int, dict[str, Any]] = {}
+    for rec in store.iter_frames(OfflineOrchestrator.P2_PASS_NAME):
+        fn = int(rec.get("frame_no", -1))
+        if fn < frame_from:
+            continue
+        if frame_to is not None and fn > frame_to:
+            break
+        p2_scene[fn] = rec
     rows: list[dict[str, Any]] = []
     with open(store.run_dir / "frames" / f"{p1}.jsonl") as f:
         for line in f:
@@ -605,7 +615,19 @@ async def get_frames_meta(
                 continue
             if frame_to is not None and fn > frame_to:
                 break
-            rows.append({"frame_no": fn, "pts_ms": rec.get("pts_ms", fn * 1000.0 / fps)})
+            row = {"frame_no": fn, "pts_ms": rec.get("pts_ms", fn * 1000.0 / fps)}
+            scene = p2_scene.get(fn)
+            if scene is not None and scene.get("scene_to_frame") is not None:
+                row.update(
+                    {
+                        "scene_segment": scene.get("scene_segment"),
+                        "scene_to_frame": scene.get("scene_to_frame"),
+                        "frame_to_scene": scene.get("frame_to_scene"),
+                        "scene_confidence": scene.get("scene_confidence"),
+                        "scene_linked": scene.get("scene_linked"),
+                    }
+                )
+            rows.append(row)
     return {"frames": rows}
 
 
@@ -878,7 +900,19 @@ async def get_hazard_marker(run_id: str, settings: ReviewSettings = Depends(get_
     marker = _annotation_store(settings, run_id).get_hazard_marker()
     if marker is None or marker.get("x") is None:
         return {"active": False}
-    return {"active": True, "x": marker["x"], "y": marker["y"], "note": marker.get("note")}
+    payload = {"active": True, "x": marker["x"], "y": marker["y"], "note": marker.get("note")}
+    if marker.get("scene_x") is not None:
+        payload.update(
+            {
+                "coordinate_space": "scene",
+                "anchor_frame": marker.get("anchor_frame"),
+                "scene_x": marker.get("scene_x"),
+                "scene_y": marker.get("scene_y"),
+                "scene_segment": marker.get("scene_segment"),
+                "scene_confidence": marker.get("scene_confidence"),
+            }
+        )
+    return payload
 
 
 @router.post("/runs/{run_id}/hazard-marker", status_code=201)
@@ -886,15 +920,43 @@ async def set_hazard_marker(
     run_id: str,
     x: float = Form(..., ge=0),
     y: float = Form(..., ge=0),
+    frame_no: int | None = Form(None, ge=0),
     note: str | None = Form(None, max_length=4000),
     settings: ReviewSettings = Depends(get_settings),
 ) -> dict[str, Any]:
-    """Place or move the hazard marker (report §5.1). `x`/`y` are frame-pixel
-    coordinates — the reviewer clicks the overlay canvas, which is already
-    sized to the video's intrinsic pixels (see review/static/app.js), so no
-    conversion happens client- or server-side. Takes effect immediately: the
-    very next GET .../events call recomputes MOT_FARA against it."""
-    return _annotation_store(settings, run_id).set_hazard_marker(x=x, y=y, note=note)
+    """Place or move the hazard marker (report §5.1, DECISIONS B29).
+
+    `x`/`y` are intrinsic frame pixels from the overlay canvas. For a new
+    sidecar, `frame_no` selects P2's inverse transform and the server stores
+    the corresponding local scene point as provenance. Older sidecars without
+    scene transforms retain fixed-pixel behavior. The next GET .../events
+    immediately recomputes MOT_FARA against the marker.
+    """
+    store = _open_store(settings, run_id)
+    scene = None
+    scene_supported = False
+    for row in store.iter_frames(OfflineOrchestrator.P2_PASS_NAME):
+        if row.get("frame_to_scene") is not None:
+            scene_supported = True
+        if frame_no is not None and int(row.get("frame_no", -1)) == frame_no:
+            scene = row
+            if row.get("frame_to_scene") is not None:
+                break
+    if scene_supported and (scene is None or scene.get("frame_to_scene") is None):
+        raise HTTPException(status_code=422, detail="faromarkören kräver en giltig ankarruta")
+    scene_kwargs: dict[str, Any] = {}
+    if scene is not None and scene.get("frame_to_scene") is not None:
+        from analysis.scene import transform_point
+
+        scene_x, scene_y = transform_point(scene["frame_to_scene"], (x, y))
+        scene_kwargs = {
+            "anchor_frame": frame_no,
+            "scene_x": scene_x,
+            "scene_y": scene_y,
+            "scene_segment": int(scene["scene_segment"]),
+            "scene_confidence": float(scene.get("scene_confidence") or 0.0),
+        }
+    return _annotation_store(settings, run_id).set_hazard_marker(x=x, y=y, note=note, **scene_kwargs)
 
 
 @router.delete("/runs/{run_id}/hazard-marker", status_code=200)
@@ -1061,11 +1123,13 @@ async def get_person_trajectory(
     max_points: int = Query(1500, ge=10, le=10000),
     settings: ReviewSettings = Depends(get_settings),
 ) -> dict[str, Any]:
-    """Downsampled foot-center path for one (corrected) person — the
-    dossier's trajectory plot. Raw frame pixels, same coordinate space and
-    caveat as the heatmap (stabilization offsets are not persisted; see
-    review/heatmap.py). Stride-downsampled so a film-long track stays a
-    bounded payload."""
+    """Downsampled foot-center path for one corrected person.
+
+    New sidecars use P2's local scene coordinates and expose segment ids so
+    the client never joins paths across an unlinked camera cut.  Older
+    sidecars retain their raw-frame fallback.  Stride-downsampling keeps a
+    film-long trajectory bounded.
+    """
     _require_feature(settings, "feature_dossier", "FEATURE_DOSSIER")
     store = _open_store(settings, run_id)
     p2 = OfflineOrchestrator.P2_PASS_NAME
@@ -1077,25 +1141,32 @@ async def get_person_trajectory(
         raise HTTPException(status_code=404, detail="okänd person")
     tids = {int(t) for t in rec.get("tracklet_ids", [])}
     fps = _run_fps(store)
+    rows = [r for r in store.iter_tracklets(p2) if int(r.get("tracklet_id", -1)) in tids]
+    scene_mode = bool(rows) and all(r.get("scene_pos") is not None for r in rows)
     pts = []
-    for r in store.iter_tracklets(p2):
-        if int(r.get("tracklet_id", -1)) not in tids:
-            continue
+    for r in rows:
         x0, y0, x1, y1 = (float(v) for v in r["xyxy"])
         fno = int(r["frame_no"])
-        pts.append(
-            {
-                "frame_no": fno,
-                "t": round(fno / fps, 3),
-                "x": round((x0 + x1) / 2.0, 1),
-                "y": round(y1, 1),
-                "tracklet_id": int(r["tracklet_id"]),
-            }
-        )
+        point = {
+            "frame_no": fno,
+            "t": round(fno / fps, 3),
+            "x": round(float(r["scene_pos"][0]) if scene_mode else (x0 + x1) / 2.0, 1),
+            "y": round(float(r["scene_pos"][1]) if scene_mode else y1, 1),
+            "tracklet_id": int(r["tracklet_id"]),
+        }
+        if scene_mode:
+            point["scene_segment"] = int(r["scene_segment"])
+        pts.append(point)
     pts.sort(key=lambda p: (p["frame_no"], p["tracklet_id"]))
     n_total = len(pts)
     stride = max(1, -(-n_total // max_points))  # ceil division
-    return {"person_id": person_id, "n_total": n_total, "stride": stride, "points": pts[::stride]}
+    return {
+        "person_id": person_id,
+        "coordinate_space": "scene" if scene_mode else "frame",
+        "n_total": n_total,
+        "stride": stride,
+        "points": pts[::stride],
+    }
 
 
 # ---- Phase 5: ground truth ("facit") ----

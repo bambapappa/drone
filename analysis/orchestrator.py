@@ -560,11 +560,13 @@ class OfflineOrchestrator:
         }
         self.store.record_pass_start(pass_name, pass_meta)
         self.store.start_fresh_pass_output("tracklets", pass_name)
+        self.store.start_fresh_pass_output("frames", pass_name)
 
         dets_by_frame: dict[int, list[dict[str, Any]]] = defaultdict(list)
         for rec in self.store.iter_detections(self.P1_PASS_NAME):
             dets_by_frame[rec["frame_no"]].append(rec)
 
+        from analysis.scene import scene_measurement
         from analysis.tracker import Tracker
 
         tracker_yaml_path = self._configure_track_buffer()
@@ -575,7 +577,7 @@ class OfflineOrchestrator:
 
         frame_store = FrameStore(self.meta.path, self.meta)
         try:
-            tracker = Tracker(tracker_yaml_path)
+            tracker = Tracker(tracker_yaml_path, seed=self.config.seed)
             for frame_no in range(total_frames):
                 frame = frame_store.read()
                 if frame is None:
@@ -586,7 +588,17 @@ class OfflineOrchestrator:
                 # them in) — required so BoT-SORT's per-frame output index
                 # maps back to the correct det_id.
                 records = dets_by_frame.get(frame_no, [])
-                for tb in tracker.update(records, frame):
+                tracked = tracker.update(records, frame)
+                scene_frame = tracker.scene_gmc.current
+                if scene_frame is None:  # defensive: update() always advances GMC
+                    raise RuntimeError(f"scene GMC produced no record for frame {frame_no}")
+                self.store.add_frame(
+                    pass_name,
+                    frame_no,
+                    scene_frame.to_record(pts_ms=self._video_t(frame_no) * 1000.0),
+                )
+                for tb in tracked:
+                    scene = scene_measurement(tb.xyxy, scene_frame.frame_to_scene, scene_frame.segment)
                     self.store.add_tracklet_frame(
                         pass_name,
                         tb.track_id,
@@ -596,6 +608,7 @@ class OfflineOrchestrator:
                             "cls": tb.cls_name,
                             "conf": round(tb.conf, 4),
                             "xyxy": list(tb.xyxy),
+                            **scene,
                         },
                     )
                     total_tracklet_rows += 1
@@ -611,6 +624,7 @@ class OfflineOrchestrator:
             "total_tracklet_rows": total_tracklet_rows,
             "elapsed_s": round(elapsed, 1),
             "fps_effective": round(processed / max(elapsed, 0.001), 1),
+            "scene_segments": (tracker.scene_gmc.current.segment + 1) if tracker.scene_gmc.current else 0,
         }
         self.store.record_pass_complete(pass_name, stats)
 
@@ -760,6 +774,7 @@ class OfflineOrchestrator:
         from analysis.events import derive_events
 
         tracklet_rows = list(self.store.iter_tracklets(self.P2_PASS_NAME))
+        scene_frames = {int(row["frame_no"]): row for row in self.store.iter_frames(self.P2_PASS_NAME)}
         w, h = self._effective_dims()
 
         frame_store = FrameStore(self.meta.path, self.meta)
@@ -784,6 +799,7 @@ class OfflineOrchestrator:
                 frame_h=h,
                 config=self.config,
                 ignore_regions=list(self.config.ignore_regions),
+                scene_frames=scene_frames,
             )
         finally:
             frame_store.close()

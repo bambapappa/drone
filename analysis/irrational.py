@@ -151,6 +151,7 @@ class _Kinematic:
     box_h: float
     speed_bh: float
     heading_deg: float | None  # None: no reliable direction this frame
+    scene_segment: int | None
 
 
 def _build_kinematics(rows: list[dict[str, Any]], fps: float) -> list[_Kinematic]:
@@ -160,14 +161,22 @@ def _build_kinematics(rows: list[dict[str, Any]], fps: float) -> list[_Kinematic
     derive_behavior_events (same tracker-adjusted xyxy, same convention)."""
     out: list[_Kinematic] = []
     prev: _Kinematic | None = None
+    previous_segment: int | None = None
     for row in rows:
         frame_no = int(row["frame_no"])
         x0, y0, x1, y1 = (float(v) for v in row["xyxy"])
-        x, y = (x0 + x1) / 2.0, y1
-        box_h = max(y1 - y0, 1.0)
+        if row.get("scene_pos") is not None:
+            x, y = (float(v) for v in row["scene_pos"])
+            box_h = max(float(row.get("scene_box_h", y1 - y0)), 1.0)
+        else:
+            x, y = (x0 + x1) / 2.0, y1
+            box_h = max(y1 - y0, 1.0)
         t = frame_no / fps
-        if prev is None:
-            k = _Kinematic(frame_no, t, x, y, box_h, 0.0, None)
+        segment = int(row["scene_segment"]) if row.get("scene_segment") is not None else None
+        if prev is None or (
+            segment is not None and previous_segment is not None and segment != previous_segment
+        ):
+            k = _Kinematic(frame_no, t, x, y, box_h, 0.0, None, segment)
         else:
             dt = t - prev.t
             dx, dy = x - prev.x, y - prev.y
@@ -175,9 +184,10 @@ def _build_kinematics(rows: list[dict[str, Any]], fps: float) -> list[_Kinematic
             body = max((box_h + prev.box_h) / 2.0, 1.0)
             speed_bh = dist / dt / body if dt > 0 else 0.0
             heading = math.degrees(math.atan2(dy, dx)) % 360.0 if dist > 1e-6 and dt > 0 else None
-            k = _Kinematic(frame_no, t, x, y, box_h, speed_bh, heading)
+            k = _Kinematic(frame_no, t, x, y, box_h, speed_bh, heading, segment)
         out.append(k)
         prev = k
+        previous_segment = segment
     return out
 
 
@@ -613,12 +623,23 @@ def derive_irrational_events(
         quality = _trajectory_quality(by_tracklet[tid], person_id, fps)
         analyzer = _IrrationalTrackletAnalyzer(config)
         timeline: list[tuple[int, bool, dict[str, Any]]] = []
+        previous_segment: int | None = None
         for k in kins:
+            if (
+                k.scene_segment is not None
+                and previous_segment is not None
+                and k.scene_segment != previous_segment
+            ):
+                # Rolling tortuosity/freeze/oscillation state contains scene
+                # positions. Local maps are unrelated across a visual loss,
+                # so carrying that state forward would manufacture a signal.
+                analyzer = _IrrationalTrackletAnalyzer(config)
             neighbors = [nk for ntid, nk in frame_index[k.frame_no] if ntid != tid]
             fired, evidence = analyzer.update(k, neighbors)
             if k.frame_no in still_frames:
                 fired, evidence = False, {}
             timeline.append((k.frame_no, fired, evidence))
+            previous_segment = k.scene_segment
         new_events, seq = _diff_irrational_timeline(
             timeline,
             tracklet_id=tid,

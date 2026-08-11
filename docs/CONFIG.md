@@ -49,6 +49,11 @@ inga CLI-flaggor eller miljövariabler ännu — trösklarna är konstruktörs-
 defaultvärden, motiverade i modulens docstring, tills ett behov av att
 justera dem per körning uppstår.
 
+Faromarkörens scenförankring har ingen separat konfigurationsflagga. Den är
+en bakåtkompatibel del av P2-artefakten: nya körningar lagrar lokala
+scenmatriser, medan äldre körningar fortsätter använda sin sparade
+råpixelpunkt. GPS eller annan telemetri läses inte av denna version.
+
 ## Videokälla
 
 | Variabel | Default | Beskrivning |

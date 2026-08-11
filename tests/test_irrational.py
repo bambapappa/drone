@@ -87,6 +87,23 @@ class TestErraticPath:
         irr = [e for e in events if e.category == CATEGORY_IRRATIONELL]
         assert not any("erratic" in e.evidence["sub_signals"] for e in irr)
 
+    def test_scene_segments_do_not_share_rolling_signal_state(self):
+        # The combined path is strongly erratic, but each ten-frame scene
+        # segment is too short to fill the default rolling window. A visual
+        # cut must reset the ensemble rather than fabricate one long path.
+        n = 150
+        seq = [_box_at(300.0 + 15.0 * math.cos(i * 1.5), 300.0 + 15.0 * math.sin(i * 1.5)) for i in range(n)]
+        rows = _trk(1, seq)
+        for row, box in zip(rows, seq):
+            x0, _y0, x1, y1 = box
+            row["scene_pos"] = [(x0 + x1) / 2.0, y1]
+            row["scene_box_h"] = BOX_H
+            row["scene_segment"] = row["frame_no"] // 10
+
+        events = derive_irrational_events(rows, person_by_tracklet={}, fps=FPS, config=_cfg())
+
+        assert not any(e.category == CATEGORY_IRRATIONELL for e in events)
+
 
 class TestPanicSprint:
     def test_lone_sprinter_among_stationary_group_fires_sprint(self):

@@ -76,6 +76,46 @@ class TestRecomputeMotFara:
         )
         assert events and all(e["person_id"] == 9 for e in events)
 
+    def test_scene_anchored_danger_uses_scene_motion_not_screen_motion(self, tmp_path: Path):
+        store = ArtifactStore(str(tmp_path / "scene-out"), "vh", "ch")
+        store.create()
+        store.record_pass_start(OfflineOrchestrator.P1_PASS_NAME, {"fps": 10.0})
+        store.record_pass_complete(OfflineOrchestrator.P1_PASS_NAME, {})
+        store.record_pass_start(OfflineOrchestrator.P2_PASS_NAME, {})
+        store.start_fresh_pass_output("tracklets", OfflineOrchestrator.P2_PASS_NAME)
+        for i in range(80):
+            # Screen box is static while the stabilized scene position moves +x.
+            # Only the B29 scene substrate can see movement toward the hazard.
+            store.add_tracklet_frame(
+                OfflineOrchestrator.P2_PASS_NAME,
+                tracklet_id=1,
+                frame_no=i,
+                det_id=i,
+                data={
+                    "cls": "person",
+                    "conf": 0.9,
+                    "xyxy": [100.0, 100.0, 130.0, 180.0],
+                    "scene_pos": [100.0 + i * 4.0, 180.0],
+                    "scene_box_h": 80.0,
+                    "scene_segment": 0,
+                },
+            )
+        store.record_pass_complete(OfflineOrchestrator.P2_PASS_NAME, {})
+        store.record_pass_start(OfflineOrchestrator.P5_PASS_NAME, {"config": {}})
+        store.record_pass_complete(OfflineOrchestrator.P5_PASS_NAME, {})
+        store.close()
+
+        opened = ArtifactStore.open_readonly(store.run_dir)
+        events = recompute_mot_fara(
+            opened,
+            person_by_tracklet={},
+            fps=10.0,
+            hazard_scene=(2000.0, 180.0),
+            hazard_segment=0,
+        )
+        assert events
+        assert all(e["category"] == CATEGORY_MOT_FARA for e in events)
+
 
 class TestDeterminism:
     def test_same_position_twice_byte_identical(self, store_with_tracklets: ArtifactStore):

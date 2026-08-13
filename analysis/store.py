@@ -31,7 +31,7 @@ Schema (per architecture report §3 + DECISIONS B29):
                      events) never destroys human review work. See
                      AppendOnlyAnnotationStore.
   manifest.json      video hash, config hash, weight hashes, code version, seed,
-                     code version, pass log
+                     pass log
 
 Each table is a directory of JSONL files, one per pass. The manifest ties
 everything together and enables bit-identical re-runs.

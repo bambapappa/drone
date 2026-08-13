@@ -60,3 +60,45 @@ def test_launcher_fresh_flag_omits_reuse_option(tmp_path):
 
     analyze = next(command for command in commands if "run --rm analyze" in command)
     assert "--reuse-latest" not in analyze
+
+
+def test_launcher_stops_safely_on_colima_vz_host_agent_error(tmp_path):
+    """A failed Colima start must not progress to compose or change .env."""
+    root = tmp_path / "project"
+    scripts = root / "scripts"
+    bin_dir = tmp_path / "bin"
+    scripts.mkdir(parents=True)
+    bin_dir.mkdir()
+    shutil.copy2(Path("scripts/start_offline_visdrone.sh"), scripts / "start_offline_visdrone.sh")
+    (root / "videos").mkdir()
+    (root / "videos" / "film.mp4").write_bytes(b"video")
+    env_file = root / ".env"
+    env_file.write_text("MODEL=user-choice.pt\n")
+
+    log = tmp_path / "commands.log"
+    _write_executable(
+        bin_dir / "docker",
+        "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$TEST_LOG\"\nexit 1\n",
+    )
+    _write_executable(
+        bin_dir / "colima",
+        "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$TEST_LOG\"\necho 'VZ: host agent is not running' >&2\nexit 1\n",
+    )
+    env = os.environ | {
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "TEST_LOG": str(log),
+    }
+    result = subprocess.run(
+        ["bash", "scripts/start_offline_visdrone.sh", "videos/film.mp4"],
+        cwd=root,
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 1
+    assert 'VZ-felet "host agent is not"' in result.stderr
+    assert "Starta om\nMacen" in result.stderr
+    assert "Radera eller återskapa inte Colima-profilen\nautomatiskt" in result.stderr
+    assert env_file.read_text() == "MODEL=user-choice.pt\n"
+    assert log.read_text().splitlines() == ["--context colima info", "start"]

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Starta den fristående analysen med VisDrone på en Mac med Colima/Docker.
-# Kör från valfri katalog: bash scripts/start_offline_visdrone.sh videos/film.mp4
+# Anropas från repo-roten; skriptet hittar sedan repo-katalogen via sin egen sökväg.
 set -euo pipefail
 
 usage() {

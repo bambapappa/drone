@@ -3,7 +3,7 @@
 import tempfile
 from pathlib import Path
 
-from analysis.store import ArtifactStore
+from analysis.store import ArtifactStore, analysis_code_version
 
 
 class TestArtifactStore:
@@ -27,7 +27,45 @@ class TestArtifactStore:
             assert m["sidecar_version"] == 1
             assert m["video_hash"] == "abc123"
             assert m["config_hash"] == "cfg456"
+            assert m["model_hash"] is None
             assert m["run_id"] == store.run_id
+
+    def test_analysis_code_version_changes_when_copied_source_changes(self, tmp_path):
+        source = tmp_path / "source"
+        analysis = source / "analysis"
+        analysis.mkdir(parents=True)
+        (analysis / "module.py").write_text("value = 1\n")
+        (source / "pyproject.toml").write_text("[project]\nname = 'test'\n")
+
+        original = analysis_code_version(source)
+        (analysis / "module.py").write_text("value = 2\n")
+
+        assert analysis_code_version(source) != original
+
+    def test_reuse_requires_complete_matching_code_and_model(self, tmp_path, monkeypatch):
+        model_hash = "model-sha256-a"
+        store = ArtifactStore(str(tmp_path), "vhash", "chash", model_hash=model_hash)
+        store.create()
+        store.record_pass_start("p1_detect", {})
+        store.record_pass_complete("p1_detect", {})
+
+        assert ArtifactStore.resolve_latest_complete(
+            str(tmp_path), "vhash", "chash", model_hash, ("p1_detect", "p2_track")
+        ) is None
+
+        store.record_pass_start("p2_track", {})
+        store.record_pass_complete("p2_track", {})
+        assert ArtifactStore.resolve_latest_complete(
+            str(tmp_path), "vhash", "chash", model_hash, ("p1_detect", "p2_track")
+        ) == store.run_id
+        assert ArtifactStore.resolve_latest_complete(
+            str(tmp_path), "vhash", "chash", "model-sha256-b", ("p1_detect", "p2_track")
+        ) is None
+
+        monkeypatch.setattr("analysis.store.code_version", lambda: "source-sha256:changed")
+        assert ArtifactStore.resolve_latest_complete(
+            str(tmp_path), "vhash", "chash", model_hash, ("p1_detect", "p2_track")
+        ) is None
 
     def test_record_pass_start_and_complete(self):
         with tempfile.TemporaryDirectory() as tmp:

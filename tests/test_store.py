@@ -49,23 +49,39 @@ class TestArtifactStore:
         store.record_pass_start("p1_detect", {})
         store.record_pass_complete("p1_detect", {})
 
-        assert ArtifactStore.resolve_latest_complete(
-            str(tmp_path), "vhash", "chash", weights, ("p1_detect", "p2_track")
-        ) is None
+        assert (
+            ArtifactStore.resolve_latest_complete(
+                str(tmp_path), "vhash", "chash", weights, ("p1_detect", "p2_track")
+            )
+            is None
+        )
 
         store.record_pass_start("p2_track", {})
         store.record_pass_complete("p2_track", {})
-        assert ArtifactStore.resolve_latest_complete(
-            str(tmp_path), "vhash", "chash", weights, ("p1_detect", "p2_track")
-        ) == store.run_id
-        assert ArtifactStore.resolve_latest_complete(
-            str(tmp_path), "vhash", "chash", {"yolo": "model-sha256-a", "reid": "reid-sha256-b"}, ("p1_detect", "p2_track")
-        ) is None
+        assert (
+            ArtifactStore.resolve_latest_complete(
+                str(tmp_path), "vhash", "chash", weights, ("p1_detect", "p2_track")
+            )
+            == store.run_id
+        )
+        assert (
+            ArtifactStore.resolve_latest_complete(
+                str(tmp_path),
+                "vhash",
+                "chash",
+                {"yolo": "model-sha256-a", "reid": "reid-sha256-b"},
+                ("p1_detect", "p2_track"),
+            )
+            is None
+        )
 
         monkeypatch.setattr("analysis.store.code_version", lambda: "source-sha256:changed")
-        assert ArtifactStore.resolve_latest_complete(
-            str(tmp_path), "vhash", "chash", weights, ("p1_detect", "p2_track")
-        ) is None
+        assert (
+            ArtifactStore.resolve_latest_complete(
+                str(tmp_path), "vhash", "chash", weights, ("p1_detect", "p2_track")
+            )
+            is None
+        )
 
     def test_weight_hashes_detects_reid_replacement_at_same_path(self, tmp_path):
         yolo = tmp_path / "yolo.pt"
@@ -83,9 +99,12 @@ class TestArtifactStore:
         store.record_pass_start("p1_detect", {})
         store.record_pass_complete("p1_detect", {})
 
-        assert ArtifactStore.resolve_latest_complete(
-            str(tmp_path), "vhash", "chash", {"yolo": "current"}, ("p1_detect",)
-        ) is None
+        assert (
+            ArtifactStore.resolve_latest_complete(
+                str(tmp_path), "vhash", "chash", {"yolo": "current"}, ("p1_detect",)
+            )
+            is None
+        )
 
     def test_record_pass_start_and_complete(self):
         with tempfile.TemporaryDirectory() as tmp:

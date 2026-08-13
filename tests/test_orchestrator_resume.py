@@ -131,12 +131,16 @@ class TestInterruptedResume:
             config_hash = ArtifactStore.config_hash_from_settings(config.to_dict())
 
             weights = {"yolo": "test-weight"}
-            baseline_store = ArtifactStore(f"{tmp}/out_baseline", meta.video_hash, config_hash, weight_hashes=weights)
+            baseline_store = ArtifactStore(
+                f"{tmp}/out_baseline", meta.video_hash, config_hash, weight_hashes=weights
+            )
             baseline_store.create()
             OfflineOrchestrator(meta, baseline_store, config).run_pass_p1()
             baseline_frames, baseline_dets = _sidecar_bytes(baseline_store, OfflineOrchestrator.P1_PASS_NAME)
 
-            crashed_store = ArtifactStore(f"{tmp}/out_resumed", meta.video_hash, config_hash, weight_hashes=weights)
+            crashed_store = ArtifactStore(
+                f"{tmp}/out_resumed", meta.video_hash, config_hash, weight_hashes=weights
+            )
             crashed_store.create()
             FakeDetector.crash_after = 5
             with pytest.raises(RuntimeError, match="simulated crash"):
@@ -182,13 +186,17 @@ class TestInterruptedResume:
             config_hash = ArtifactStore.config_hash_from_settings(config.to_dict())
 
             weights = {"yolo": "test-weight"}
-            baseline_store = ArtifactStore(f"{tmp}/out_baseline", meta.video_hash, config_hash, weight_hashes=weights)
+            baseline_store = ArtifactStore(
+                f"{tmp}/out_baseline", meta.video_hash, config_hash, weight_hashes=weights
+            )
             baseline_store.create()
             OfflineOrchestrator(meta, baseline_store, config).run_pass_p1()
             baseline_frames, baseline_dets = _sidecar_bytes(baseline_store, OfflineOrchestrator.P1_PASS_NAME)
             assert baseline_dets == b""  # sanity: the ignore region actually filtered everything
 
-            crashed_store = ArtifactStore(f"{tmp}/out_resumed", meta.video_hash, config_hash, weight_hashes=weights)
+            crashed_store = ArtifactStore(
+                f"{tmp}/out_resumed", meta.video_hash, config_hash, weight_hashes=weights
+            )
             crashed_store.create()
             FakeDetector.crash_after = 5
             with pytest.raises(RuntimeError, match="simulated crash"):
@@ -243,6 +251,7 @@ class TestInterruptedResume:
             assert resolved == store.run_id
             assert ArtifactStore.resolve_latest(f"{tmp}/out", "vhash", "other-chash") is None
             assert ArtifactStore.resolve_latest(f"{tmp}/nonexistent", "vhash", "chash") is None
+
 
 def _seed_p1_detections(store: ArtifactStore, pass_name: str, n_frames: int) -> None:
     """Seed a store's detections/<pass>.jsonl with a single person moving

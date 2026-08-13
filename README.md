@@ -90,13 +90,18 @@ Lägg filmen i `videos/` och kör följande från repo-roten:
 
 ```bash
 bash scripts/start_offline_visdrone.sh videos/film.mp4
+# skapa uttryckligen en ny analys i stället för att återanvända en färdig:
+bash scripts/start_offline_visdrone.sh --fresh videos/film.mp4
 ```
 
 Skriptet kontrollerar/startar Colima och Docker, hämtar den rekommenderade
-VisDrone-s-modellen om den saknas, bygger offline-tjänsterna, kör analysen och
-startar granskningsvyn på `http://localhost:8001`. Det raderar aldrig en
-Colima-profil automatiskt; ett VZ-fel med "host agent is not" kräver normalt
-en omstart av Macen.
+VisDrone-s-modellen om den saknas, verifierar den mot den pinnade SHA-256-summan,
+bygger offline-tjänsterna, kör analysen och startar granskningsvyn på
+`http://localhost:8001`. Standardläget återanvänder en färdig körning med samma
+film, konfiguration, kod och trackerversion; `--fresh` skapar medvetet en ny.
+Skriptet använder endast Colima-kontexten för sina Docker-anrop och ändrar inte
+din aktiva Docker-kontext. Det raderar aldrig en Colima-profil automatiskt; ett
+VZ-fel med "host agent is not" kräver en omstart av Macen.
 
 Resultatet skrivs till ett versionerat sidecar-arkiv (`manifest.json` + JSONL)
 under `analysis-output/`. Körningen omfattar ingest (PTS-index, videohash,

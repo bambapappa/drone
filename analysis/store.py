@@ -257,6 +257,46 @@ class ArtifactStore:
                 best_run_id = manifest.get("run_id", candidate.name)
         return best_run_id
 
+    @staticmethod
+    def resolve_latest_complete(
+        output_dir: str,
+        video_hash: str,
+        config_hash: str,
+        required_passes: tuple[str, ...],
+    ) -> str | None:
+        """Find the newest provenance-matching run with all required passes complete."""
+        base = Path(output_dir)
+        if not base.is_dir():
+            return None
+        current_code_version = code_version()
+        current_tracker_lib_version = tracker_lib_version()
+        best_run_id: str | None = None
+        best_created_at = ""
+        for candidate in base.iterdir():
+            manifest_path = candidate / "manifest.json"
+            if not manifest_path.exists():
+                continue
+            try:
+                with open(manifest_path) as f:
+                    manifest = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                continue
+            if (
+                manifest.get("video_hash") != video_hash
+                or manifest.get("config_hash") != config_hash
+                or manifest.get("code_version") != current_code_version
+                or manifest.get("tracker_lib_version") != current_tracker_lib_version
+            ):
+                continue
+            passes = manifest.get("passes", {})
+            if any(passes.get(pass_name, {}).get("status") != "complete" for pass_name in required_passes):
+                continue
+            created_at = manifest.get("created_at", "")
+            if created_at > best_created_at:
+                best_created_at = created_at
+                best_run_id = manifest.get("run_id", candidate.name)
+        return best_run_id
+
     def record_pass_start(self, pass_name: str, pass_meta: dict[str, Any]) -> None:
         """Record that a pass has started. Called before processing begins.
 

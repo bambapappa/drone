@@ -33,7 +33,8 @@ osäkerhet.
    loop-closure/SLAM eller fusion med GPU-endpoint + drönartelemetri, inte
    hårdare gissning i detta lager.
 4. På Mac med Colima: kör `bash scripts/start_offline_visdrone.sh
-   videos/film.mp4` för den reproducerbara offline-starten med VisDrone-s.
+   videos/film.mp4` för den reproducerbara offline-starten med VisDrone-s;
+   `--fresh` är det uttryckliga valet för en ny analys.
 
 ## Bevara
 

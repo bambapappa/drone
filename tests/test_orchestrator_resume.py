@@ -242,6 +242,23 @@ class TestInterruptedResume:
             assert ArtifactStore.resolve_latest(f"{tmp}/out", "vhash", "other-chash") is None
             assert ArtifactStore.resolve_latest(f"{tmp}/nonexistent", "vhash", "chash") is None
 
+    def test_resolve_latest_complete_requires_every_requested_pass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ArtifactStore(f"{tmp}/out", "vhash", "chash")
+            store.create()
+            store.record_pass_start("p1_detect", {})
+            store.record_pass_complete("p1_detect", {})
+
+            assert ArtifactStore.resolve_latest_complete(
+                f"{tmp}/out", "vhash", "chash", ("p1_detect", "p2_track")
+            ) is None
+
+            store.record_pass_start("p2_track", {})
+            store.record_pass_complete("p2_track", {})
+            assert ArtifactStore.resolve_latest_complete(
+                f"{tmp}/out", "vhash", "chash", ("p1_detect", "p2_track")
+            ) == store.run_id
+
 
 def _seed_p1_detections(store: ArtifactStore, pass_name: str, n_frames: int) -> None:
     """Seed a store's detections/<pass>.jsonl with a single person moving

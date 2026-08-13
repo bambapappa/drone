@@ -20,6 +20,7 @@ the model and prints its class names without running inference.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import sys
 import urllib.error
 import urllib.request
@@ -32,6 +33,11 @@ HF_REPOS = {
     "l": "mshamrai/yolov8l-visdrone",
 }
 CANDIDATE_FILES = ["best.pt", "model.pt", "weights/best.pt"]
+PINNED_S_URL = (
+    "https://huggingface.co/mshamrai/yolov8s-visdrone/resolve/"
+    "523ab5140acfe3fd7b0f1ab5084ebd942159fd5f/best.pt"
+)
+PINNED_S_SHA256 = "e3776314790b381f2eb08ed87ccec71e19a7a0308ac064adb704643b73d06947"
 
 
 def download(url: str, dest: Path) -> bool:
@@ -54,6 +60,14 @@ def download(url: str, dest: Path) -> bool:
         return False
 
 
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        while chunk := f.read(1 << 20):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--size", choices=sorted(HF_REPOS), default="s")
@@ -63,21 +77,33 @@ def main() -> int:
     args = ap.parse_args()
 
     dest = Path(args.out) if args.out else Path("models") / f"visdrone-yolov8{args.size}.pt"
-    if dest.exists():
-        print(f"{dest} finns redan — hoppar över nedladdning")
+    expected_sha256 = PINNED_S_SHA256 if args.size == "s" and args.url is None else None
+    if args.url:
+        urls = [args.url]
+    elif args.size == "s":
+        urls = [PINNED_S_URL]
     else:
-        urls = (
-            [args.url]
-            if args.url
-            else [f"https://huggingface.co/{HF_REPOS[args.size]}/resolve/main/{f}" for f in CANDIDATE_FILES]
-        )
+        urls = [f"https://huggingface.co/{HF_REPOS[args.size]}/resolve/main/{f}" for f in CANDIDATE_FILES]
+    if dest.exists():
+        if expected_sha256 and sha256(dest) != expected_sha256:
+            print(f"Fel: SHA-256 för {dest} stämmer inte med den pinnade VisDrone-s-vikten.")
+            return 1
+        print(f"{dest} finns redan — verifierad")
+    else:
         ok = False
+        temp_dest = dest.with_name(f".{dest.name}.download")
         for url in urls:
             print(f"Försöker {url}")
-            if download(url, dest):
+            temp_dest.unlink(missing_ok=True)
+            if download(url, temp_dest):
+                if expected_sha256 and sha256(temp_dest) != expected_sha256:
+                    print(f"Fel: SHA-256 för den hämtade vikten stämmer inte: {url}")
+                    temp_dest.unlink(missing_ok=True)
+                    return 1
+                temp_dest.replace(dest)
                 ok = True
                 break
-            dest.unlink(missing_ok=True)
+            temp_dest.unlink(missing_ok=True)
         if not ok:
             print(
                 "\nKunde inte hämta vikterna automatiskt. Ladda ned .pt-filen manuellt\n"

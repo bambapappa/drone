@@ -30,8 +30,8 @@ Schema (per architecture report §3 + DECISIONS B29):
                      (which rewrites frames/detections/tracklets/persons/
                      events) never destroys human review work. See
                      AppendOnlyAnnotationStore.
-  manifest.json      video hash, config hash, model+weights versions, seed,
-                     code version, pass log
+  manifest.json      video hash, config hash, weight hashes, code version, seed,
+                     pass log
 
 Each table is a directory of JSONL files, one per pass. The manifest ties
 everything together and enables bit-identical re-runs.
@@ -44,7 +44,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -66,36 +65,50 @@ def tracker_lib_version() -> str:
         return "no-ultralytics"
 
 
-def code_version() -> str:
-    """Git commit SHA of the running code, plus a '-dirty' suffix if the
-    working tree has uncommitted changes. 'unknown' outside a git checkout.
+def sha256_file(path: Path) -> str:
+    """Return the SHA-256 digest of a file without loading it all into memory."""
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        while chunk := f.read(1 << 20):
+            digest.update(chunk)
+    return digest.hexdigest()
 
-    Used as part of the resume validation guard: resuming across a code
-    change would silently build a chimera artifact, so a resumed run must
-    match the code version that started it.
-    """
-    try:
-        repo_dir = Path(__file__).resolve().parent
-        sha = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            cwd=repo_dir,
-        )
-        if sha.returncode != 0:
-            return "unknown"
-        dirty = subprocess.run(
-            ["git", "status", "--porcelain"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            cwd=repo_dir,
-        )
-        suffix = "-dirty" if dirty.returncode == 0 and dirty.stdout.strip() else ""
-        return sha.stdout.strip() + suffix
-    except (OSError, subprocess.SubprocessError):
-        return "unknown"
+
+def analysis_code_version(source_root: Path | None = None) -> str:
+    """Return a stable content identifier for code copied into the Docker image."""
+    root = source_root or Path(__file__).resolve().parent.parent
+    analysis_dir = root / "analysis"
+    files = sorted(analysis_dir.rglob("*.py"))
+    files.extend(sorted((analysis_dir / "trackers").glob("*.yaml")))
+    project_file = root / "pyproject.toml"
+    if project_file.is_file():
+        files.append(project_file)
+    digest = hashlib.sha256()
+    for path in files:
+        digest.update(str(path.relative_to(root)).encode())
+        digest.update(b"\0")
+        with path.open("rb") as f:
+            while chunk := f.read(1 << 20):
+                digest.update(chunk)
+        digest.update(b"\0")
+    return f"source-sha256:{digest.hexdigest()}"
+
+
+def weight_hashes(model_path: str, reid_weights: str | None) -> dict[str, str | None] | None:
+    """Return the hashes of every configured inference weight file."""
+    model_file = Path(model_path)
+    if not model_file.is_file():
+        return None
+    hashes: dict[str, str | None] = {"yolo": sha256_file(model_file)}
+    if reid_weights is not None:
+        reid_file = Path(reid_weights)
+        hashes["reid"] = sha256_file(reid_file) if reid_file.is_file() else None
+    return hashes
+
+
+def code_version() -> str:
+    """Return the analysis source identity used for artifact provenance."""
+    return analysis_code_version()
 
 
 class ResumeValidationError(ValueError):
@@ -117,11 +130,19 @@ class ArtifactStore:
           checkpoints/      # P1 checkpoint state (P2/P3 are never checkpointed)
     """
 
-    def __init__(self, output_dir: str, video_hash: str, config_hash: str, run_id: str | None = None):
+    def __init__(
+        self,
+        output_dir: str,
+        video_hash: str,
+        config_hash: str,
+        run_id: str | None = None,
+        weight_hashes: dict[str, str | None] | None = None,
+    ):
         self.output_dir = Path(output_dir)
         self.video_hash = video_hash
         self.config_hash = config_hash
         self.run_id = run_id or uuid.uuid4().hex[:12]
+        self.weight_hashes = weight_hashes
         self.run_dir = self.output_dir / self.run_id
         self._manifest: dict[str, Any] = {}
         self._open_writers: dict[str, Any] = {}
@@ -161,6 +182,7 @@ class ArtifactStore:
             "created_at": now,
             "video_hash": self.video_hash,
             "config_hash": self.config_hash,
+            "weight_hashes": self.weight_hashes,
             "code_version": code_version(),
             "tracker_lib_version": tracker_lib_version(),
             "passes": {},
@@ -169,7 +191,14 @@ class ArtifactStore:
         self._write_manifest()
 
     @classmethod
-    def open_existing(cls, output_dir: str, run_id: str, video_hash: str, config_hash: str) -> ArtifactStore:
+    def open_existing(
+        cls,
+        output_dir: str,
+        run_id: str,
+        video_hash: str,
+        config_hash: str,
+        weight_hashes: dict[str, str | None] | None = None,
+    ) -> ArtifactStore:
         """Open an existing run directory for explicit --resume.
 
         Refuses to continue unless the target manifest's video_hash,
@@ -199,6 +228,10 @@ class ArtifactStore:
             mismatches.append(
                 f"config_hash: run has {manifest.get('config_hash')!r}, current is {config_hash!r}"
             )
+        if not isinstance(weight_hashes, dict) or manifest.get("weight_hashes") != weight_hashes:
+            mismatches.append(
+                f"weight_hashes: run has {manifest.get('weight_hashes')!r}, current is {weight_hashes!r}"
+            )
         if manifest.get("code_version") != current_code_version:
             mismatches.append(
                 f"code_version: run has {manifest.get('code_version')!r}, current is {current_code_version!r}"
@@ -213,7 +246,7 @@ class ArtifactStore:
                 f"Cannot resume run {run_id}: provenance mismatch\n  " + "\n  ".join(mismatches)
             )
 
-        store = cls(output_dir, video_hash, config_hash, run_id=run_id)
+        store = cls(output_dir, video_hash, config_hash, run_id=run_id, weight_hashes=weight_hashes)
         store._manifest = manifest
         store._manifest.setdefault("invocations", [])
         store._manifest["invocations"].append(
@@ -250,6 +283,48 @@ class ArtifactStore:
             except (json.JSONDecodeError, OSError):
                 continue
             if manifest.get("video_hash") != video_hash or manifest.get("config_hash") != config_hash:
+                continue
+            created_at = manifest.get("created_at", "")
+            if created_at > best_created_at:
+                best_created_at = created_at
+                best_run_id = manifest.get("run_id", candidate.name)
+        return best_run_id
+
+    @staticmethod
+    def resolve_latest_complete(
+        output_dir: str,
+        video_hash: str,
+        config_hash: str,
+        weight_hashes: dict[str, str | None] | None,
+        required_passes: tuple[str, ...],
+    ) -> str | None:
+        """Find the newest provenance-matching run with all required passes complete."""
+        base = Path(output_dir)
+        if not isinstance(weight_hashes, dict) or not base.is_dir():
+            return None
+        current_code_version = code_version()
+        current_tracker_lib_version = tracker_lib_version()
+        best_run_id: str | None = None
+        best_created_at = ""
+        for candidate in base.iterdir():
+            manifest_path = candidate / "manifest.json"
+            if not manifest_path.exists():
+                continue
+            try:
+                with open(manifest_path) as f:
+                    manifest = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                continue
+            if (
+                manifest.get("video_hash") != video_hash
+                or manifest.get("config_hash") != config_hash
+                or manifest.get("weight_hashes") != weight_hashes
+                or manifest.get("code_version") != current_code_version
+                or manifest.get("tracker_lib_version") != current_tracker_lib_version
+            ):
+                continue
+            passes = manifest.get("passes", {})
+            if any(passes.get(pass_name, {}).get("status") != "complete" for pass_name in required_passes):
                 continue
             created_at = manifest.get("created_at", "")
             if created_at > best_created_at:

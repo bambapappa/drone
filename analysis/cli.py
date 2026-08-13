@@ -4,7 +4,7 @@
 Usage:
     analyze <video> [--output DIR] [--model PATH] [--device DEVICE]
                     [--imgsz N] [--detect-conf F] [--display-conf F]
-                    [--tiles N] [--seed N] [--resume RUN_ID | --resume latest]
+                    [--tiles N] [--seed N] [--resume RUN_ID | --resume latest | --reuse-latest]
                     [--reid-weights PATH] [--reid-floor N]
                     [--no-p3] [--no-p5]
 
@@ -15,7 +15,8 @@ annotations/, and checkpoints/.
 
 P1 is stateless and checkpointed/resumable: by default every invocation
 mints a fresh run_id and a fresh sidecar — re-running the same command does
-NOT resume automatically. To continue an interrupted P1, pass --resume
+NOT resume automatically. To reuse an already complete matching artifact,
+pass --reuse-latest. To continue an interrupted P1, pass --resume
 <run_id> (or --resume latest to resolve the most recent matching run under
 --output). Resume refuses to continue unless the target run's video hash,
 config hash, code version, and tracker library version all match the
@@ -117,12 +118,19 @@ def main() -> None:
         help="Skip the P5 event-derivation pass. By default P5 runs after P3 "
         "and writes events/ for the review UI.",
     )
-    ap.add_argument(
+    reuse_group = ap.add_mutually_exclusive_group()
+    reuse_group.add_argument(
         "--resume",
         default=None,
         metavar="RUN_ID",
         help="Resume an existing run (by run_id, or 'latest' to resolve the most "
         "recent matching run under --output). Default: mint a fresh run_id.",
+    )
+    reuse_group.add_argument(
+        "--reuse-latest",
+        action="store_true",
+        help="Exit successfully when an already complete run matches the current video, "
+        "config, code, and tracker-library provenance. Otherwise create a fresh run.",
     )
 
     args = ap.parse_args()
@@ -145,6 +153,47 @@ def main() -> None:
     print(f"Seed:             {args.seed}")
     print(f"Track buffer:     {args.track_buffer_s}s")
     print()
+
+    # ---- Config ----
+    from analysis.orchestrator import OfflineConfig
+    from analysis.store import ArtifactStore, weight_hashes
+
+    config = OfflineConfig(
+        model=args.model or os.environ.get("MODEL", "yolo11n.pt"),
+        device=args.device,
+        imgsz=args.imgsz,
+        detect_conf=args.detect_conf,
+        display_conf=args.display_conf,
+        iou=args.iou,
+        tiles=args.tiles,
+        seed=args.seed,
+        track_buffer_s=args.track_buffer_s,
+        reid_weights=args.reid_weights,
+        reid_floor=args.reid_floor,
+    )
+
+    config_hash = ArtifactStore.config_hash_from_settings(config.to_dict())
+    current_weight_hashes = weight_hashes(config.model, config.reid_weights)
+
+    if args.reuse_latest:
+        from analysis.ingest import compute_video_hash
+        from analysis.orchestrator import OfflineOrchestrator
+
+        required_passes = [OfflineOrchestrator.P1_PASS_NAME, OfflineOrchestrator.P2_PASS_NAME]
+        if not args.no_p3:
+            required_passes.append(OfflineOrchestrator.P3_PASS_NAME)
+        if not args.no_p3 and not args.no_p5:
+            required_passes.append(OfflineOrchestrator.P5_PASS_NAME)
+        run_id = ArtifactStore.resolve_latest_complete(
+            output_dir,
+            compute_video_hash(str(video_path)),
+            config_hash,
+            current_weight_hashes,
+            tuple(required_passes),
+        )
+        if run_id:
+            print(f"Återanvänder färdig körning: {Path(output_dir) / run_id}")
+            return
 
     # ---- Ingest ----
     print("--- Ingest ---")
@@ -171,26 +220,6 @@ def main() -> None:
     print(f"  Ingest time:    {ingest_elapsed:.1f}s")
     print()
 
-    # ---- Config ----
-    from analysis.orchestrator import OfflineConfig
-    from analysis.store import ArtifactStore
-
-    config = OfflineConfig(
-        model=args.model or os.environ.get("MODEL", "yolo11n.pt"),
-        device=args.device,
-        imgsz=args.imgsz,
-        detect_conf=args.detect_conf,
-        display_conf=args.display_conf,
-        iou=args.iou,
-        tiles=args.tiles,
-        seed=args.seed,
-        track_buffer_s=args.track_buffer_s,
-        reid_weights=args.reid_weights,
-        reid_floor=args.reid_floor,
-    )
-
-    config_hash = ArtifactStore.config_hash_from_settings(config.to_dict())
-
     # ---- Store ----
     from analysis.store import ResumeValidationError
 
@@ -206,7 +235,9 @@ def main() -> None:
                 )
                 sys.exit(1)
         try:
-            store = ArtifactStore.open_existing(output_dir, resume_id, meta.video_hash, config_hash)
+            store = ArtifactStore.open_existing(
+                output_dir, resume_id, meta.video_hash, config_hash, current_weight_hashes
+            )
         except ResumeValidationError as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
@@ -216,6 +247,7 @@ def main() -> None:
             output_dir=output_dir,
             video_hash=meta.video_hash,
             config_hash=config_hash,
+            weight_hashes=current_weight_hashes,
         )
         store.create()
     # Record the source video basename so the review UI can locate the file

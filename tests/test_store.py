@@ -3,7 +3,7 @@
 import tempfile
 from pathlib import Path
 
-from analysis.store import ArtifactStore
+from analysis.store import ArtifactStore, analysis_code_version, weight_hashes
 
 
 class TestArtifactStore:
@@ -27,7 +27,84 @@ class TestArtifactStore:
             assert m["sidecar_version"] == 1
             assert m["video_hash"] == "abc123"
             assert m["config_hash"] == "cfg456"
+            assert m["weight_hashes"] is None
             assert m["run_id"] == store.run_id
+
+    def test_analysis_code_version_changes_when_copied_source_changes(self, tmp_path):
+        source = tmp_path / "source"
+        analysis = source / "analysis"
+        analysis.mkdir(parents=True)
+        (analysis / "module.py").write_text("value = 1\n")
+        (source / "pyproject.toml").write_text("[project]\nname = 'test'\n")
+
+        original = analysis_code_version(source)
+        (analysis / "module.py").write_text("value = 2\n")
+
+        assert analysis_code_version(source) != original
+
+    def test_reuse_requires_complete_matching_code_and_weights(self, tmp_path, monkeypatch):
+        weights = {"yolo": "model-sha256-a", "reid": "reid-sha256-a"}
+        store = ArtifactStore(str(tmp_path), "vhash", "chash", weight_hashes=weights)
+        store.create()
+        store.record_pass_start("p1_detect", {})
+        store.record_pass_complete("p1_detect", {})
+
+        assert (
+            ArtifactStore.resolve_latest_complete(
+                str(tmp_path), "vhash", "chash", weights, ("p1_detect", "p2_track")
+            )
+            is None
+        )
+
+        store.record_pass_start("p2_track", {})
+        store.record_pass_complete("p2_track", {})
+        assert (
+            ArtifactStore.resolve_latest_complete(
+                str(tmp_path), "vhash", "chash", weights, ("p1_detect", "p2_track")
+            )
+            == store.run_id
+        )
+        assert (
+            ArtifactStore.resolve_latest_complete(
+                str(tmp_path),
+                "vhash",
+                "chash",
+                {"yolo": "model-sha256-a", "reid": "reid-sha256-b"},
+                ("p1_detect", "p2_track"),
+            )
+            is None
+        )
+
+        monkeypatch.setattr("analysis.store.code_version", lambda: "source-sha256:changed")
+        assert (
+            ArtifactStore.resolve_latest_complete(
+                str(tmp_path), "vhash", "chash", weights, ("p1_detect", "p2_track")
+            )
+            is None
+        )
+
+    def test_weight_hashes_detects_reid_replacement_at_same_path(self, tmp_path):
+        yolo = tmp_path / "yolo.pt"
+        reid = tmp_path / "osnet.pt"
+        yolo.write_bytes(b"yolo")
+        reid.write_bytes(b"reid-v1")
+        original = weight_hashes(str(yolo), str(reid))
+        reid.write_bytes(b"reid-v2")
+
+        assert weight_hashes(str(yolo), str(reid)) != original
+
+    def test_reuse_rejects_legacy_manifest_without_weight_map(self, tmp_path):
+        store = ArtifactStore(str(tmp_path), "vhash", "chash")
+        store.create()
+        store.record_pass_start("p1_detect", {})
+        store.record_pass_complete("p1_detect", {})
+
+        assert (
+            ArtifactStore.resolve_latest_complete(
+                str(tmp_path), "vhash", "chash", {"yolo": "current"}, ("p1_detect",)
+            )
+            is None
+        )
 
     def test_record_pass_start_and_complete(self):
         with tempfile.TemporaryDirectory() as tmp:

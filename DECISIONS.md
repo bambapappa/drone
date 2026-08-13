@@ -38,6 +38,30 @@ FastAPI ── WebSocket /ws/stream ──► webbklient (canvas)
 
 ## Beslut
 
+### B30. Reproducerbar offline-start på Mac/Colima (2026-08-13)
+- **Val:** `scripts/start_offline_visdrone.sh` samlar kontroll/start av
+  Docker/Colima, hämtning av VisDrone-s, bygge, batchanalys och start av
+  granskningsvyn. Den använder alltid containerns `/models/...`-sökväg för
+  offline-tjänsten men skriver inte över användarens `.env`.
+- **Varför:** den manuella kedjan har flera lättförväxlade arbetskataloger och
+  den skrivskyddade modellmonteringen kan inte ta emot Ultralytics automatiska
+  nedladdning. Förhandsnedladdning på värden gör körningen reproducerbar.
+- **Säkerhetsgräns:** skriptet får starta Colima men får aldrig `delete`a eller
+  återskapa dess VM automatiskt. Ett VZ "host agent is not" kräver en
+  mänsklig omstart/diagnos eftersom en återställning kan förstöra lokala
+  Docker-volymer.
+- **Reproducerbarhet:** standardläget återanvänder en komplett sidecar med
+  samma video-, konfigurations-, viktfingeravtryck-, kod- och trackerversion;
+  `--fresh` är det uttryckliga valet för ny analys. Analyskoden identifieras
+  av ett deterministiskt innehållshash av `analysis/` och `pyproject.toml`, så
+  identifieraren fungerar i Docker-bilden utan `.git`. Viktfingeravtrycket är
+  en kanonisk SHA-256-karta för YOLO och, när den är angiven, ReID-vikten;
+  äldre manifest utan kartan återanvänds inte. VisDrone-s hämtas från revision
+  `523ab5140acfe3fd7b0f1ab5084ebd942159fd5f` och verifieras mot SHA-256
+  `e3776314790b381f2eb08ed87ccec71e19a7a0308ac064adb704643b73d06947` före
+  användning. Docker-anropen använder `--context colima` och ändrar aldrig
+  användarens aktiva kontext.
+
 ### B1. Detektion: Ultralytics YOLO, modell utbytbar via env
 - **Val:** `yolo11n.pt` (COCO) som standard, konfigurerbar via `MODEL` (env). Modellens klassnamn introspekteras: klasser med namn `person`, `pedestrian`, `people` behandlas som människa — därmed fungerar både COCO-modeller och VisDrone-tränade modeller (t.ex. yolov8/yolo11 finetunad på VisDrone) utan kodändring.
 - **Varför:** COCO-vikter är officiella, reproducerbara och nedladdningsbara vid Docker-build (förutsägbarhet). VisDrone-vikter ger bättre träff på små människor från hög höjd men är tredjeparts — de stöds genom att montera in en .pt-fil och sätta `MODEL=/models/visdrone.pt`.

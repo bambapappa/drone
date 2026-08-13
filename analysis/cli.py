@@ -156,7 +156,7 @@ def main() -> None:
 
     # ---- Config ----
     from analysis.orchestrator import OfflineConfig
-    from analysis.store import ArtifactStore, model_sha256
+    from analysis.store import ArtifactStore, weight_hashes
 
     config = OfflineConfig(
         model=args.model or os.environ.get("MODEL", "yolo11n.pt"),
@@ -173,7 +173,7 @@ def main() -> None:
     )
 
     config_hash = ArtifactStore.config_hash_from_settings(config.to_dict())
-    current_model_hash = model_sha256(config.model)
+    current_weight_hashes = weight_hashes(config.model, config.reid_weights)
 
     if args.reuse_latest:
         from analysis.ingest import compute_video_hash
@@ -188,7 +188,7 @@ def main() -> None:
             output_dir,
             compute_video_hash(str(video_path)),
             config_hash,
-            current_model_hash,
+            current_weight_hashes,
             tuple(required_passes),
         )
         if run_id:
@@ -236,7 +236,7 @@ def main() -> None:
                 sys.exit(1)
         try:
             store = ArtifactStore.open_existing(
-                output_dir, resume_id, meta.video_hash, config_hash, current_model_hash
+                output_dir, resume_id, meta.video_hash, config_hash, current_weight_hashes
             )
         except ResumeValidationError as e:
             print(f"Error: {e}", file=sys.stderr)
@@ -247,7 +247,7 @@ def main() -> None:
             output_dir=output_dir,
             video_hash=meta.video_hash,
             config_hash=config_hash,
-            model_hash=current_model_hash,
+            weight_hashes=current_weight_hashes,
         )
         store.create()
     # Record the source video basename so the review UI can locate the file

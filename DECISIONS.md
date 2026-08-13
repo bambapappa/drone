@@ -51,10 +51,12 @@ FastAPI ── WebSocket /ws/stream ──► webbklient (canvas)
   mänsklig omstart/diagnos eftersom en återställning kan förstöra lokala
   Docker-volymer.
 - **Reproducerbarhet:** standardläget återanvänder en komplett sidecar med
-  samma video-, konfigurations-, modellvikt-, kod- och trackerversion;
+  samma video-, konfigurations-, viktfingeravtryck-, kod- och trackerversion;
   `--fresh` är det uttryckliga valet för ny analys. Analyskoden identifieras
   av ett deterministiskt innehållshash av `analysis/` och `pyproject.toml`, så
-  identifieraren fungerar i Docker-bilden utan `.git`. VisDrone-s hämtas från revision
+  identifieraren fungerar i Docker-bilden utan `.git`. Viktfingeravtrycket är
+  en kanonisk SHA-256-karta för YOLO och, när den är angiven, ReID-vikten;
+  äldre manifest utan kartan återanvänds inte. VisDrone-s hämtas från revision
   `523ab5140acfe3fd7b0f1ab5084ebd942159fd5f` och verifieras mot SHA-256
   `e3776314790b381f2eb08ed87ccec71e19a7a0308ac064adb704643b73d06947` före
   användning. Docker-anropen använder `--context colima` och ändrar aldrig

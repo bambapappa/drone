@@ -30,7 +30,7 @@ Schema (per architecture report §3 + DECISIONS B29):
                      (which rewrites frames/detections/tracklets/persons/
                      events) never destroys human review work. See
                      AppendOnlyAnnotationStore.
-  manifest.json      video hash, config hash, model+weights versions, seed,
+  manifest.json      video hash, config hash, weight hashes, code version, seed,
                      code version, pass log
 
 Each table is a directory of JSONL files, one per pass. The manifest ties
@@ -94,10 +94,16 @@ def analysis_code_version(source_root: Path | None = None) -> str:
     return f"source-sha256:{digest.hexdigest()}"
 
 
-def model_sha256(model_path: str) -> str | None:
-    """Return a model file's content hash when it is already available locally."""
-    path = Path(model_path)
-    return sha256_file(path) if path.is_file() else None
+def weight_hashes(model_path: str, reid_weights: str | None) -> dict[str, str | None] | None:
+    """Return the hashes of every configured inference weight file."""
+    model_file = Path(model_path)
+    if not model_file.is_file():
+        return None
+    hashes: dict[str, str | None] = {"yolo": sha256_file(model_file)}
+    if reid_weights is not None:
+        reid_file = Path(reid_weights)
+        hashes["reid"] = sha256_file(reid_file) if reid_file.is_file() else None
+    return hashes
 
 
 def code_version() -> str:
@@ -130,13 +136,13 @@ class ArtifactStore:
         video_hash: str,
         config_hash: str,
         run_id: str | None = None,
-        model_hash: str | None = None,
+        weight_hashes: dict[str, str | None] | None = None,
     ):
         self.output_dir = Path(output_dir)
         self.video_hash = video_hash
         self.config_hash = config_hash
         self.run_id = run_id or uuid.uuid4().hex[:12]
-        self.model_hash = model_hash
+        self.weight_hashes = weight_hashes
         self.run_dir = self.output_dir / self.run_id
         self._manifest: dict[str, Any] = {}
         self._open_writers: dict[str, Any] = {}
@@ -176,7 +182,7 @@ class ArtifactStore:
             "created_at": now,
             "video_hash": self.video_hash,
             "config_hash": self.config_hash,
-            "model_hash": self.model_hash,
+            "weight_hashes": self.weight_hashes,
             "code_version": code_version(),
             "tracker_lib_version": tracker_lib_version(),
             "passes": {},
@@ -191,7 +197,7 @@ class ArtifactStore:
         run_id: str,
         video_hash: str,
         config_hash: str,
-        model_hash: str | None = None,
+        weight_hashes: dict[str, str | None] | None = None,
     ) -> ArtifactStore:
         """Open an existing run directory for explicit --resume.
 
@@ -222,9 +228,9 @@ class ArtifactStore:
             mismatches.append(
                 f"config_hash: run has {manifest.get('config_hash')!r}, current is {config_hash!r}"
             )
-        if manifest.get("model_hash") != model_hash:
+        if not isinstance(weight_hashes, dict) or manifest.get("weight_hashes") != weight_hashes:
             mismatches.append(
-                f"model_hash: run has {manifest.get('model_hash')!r}, current is {model_hash!r}"
+                f"weight_hashes: run has {manifest.get('weight_hashes')!r}, current is {weight_hashes!r}"
             )
         if manifest.get("code_version") != current_code_version:
             mismatches.append(
@@ -240,7 +246,7 @@ class ArtifactStore:
                 f"Cannot resume run {run_id}: provenance mismatch\n  " + "\n  ".join(mismatches)
             )
 
-        store = cls(output_dir, video_hash, config_hash, run_id=run_id, model_hash=model_hash)
+        store = cls(output_dir, video_hash, config_hash, run_id=run_id, weight_hashes=weight_hashes)
         store._manifest = manifest
         store._manifest.setdefault("invocations", [])
         store._manifest["invocations"].append(
@@ -289,12 +295,12 @@ class ArtifactStore:
         output_dir: str,
         video_hash: str,
         config_hash: str,
-        model_hash: str | None,
+        weight_hashes: dict[str, str | None] | None,
         required_passes: tuple[str, ...],
     ) -> str | None:
         """Find the newest provenance-matching run with all required passes complete."""
         base = Path(output_dir)
-        if model_hash is None or not base.is_dir():
+        if not isinstance(weight_hashes, dict) or not base.is_dir():
             return None
         current_code_version = code_version()
         current_tracker_lib_version = tracker_lib_version()
@@ -312,7 +318,7 @@ class ArtifactStore:
             if (
                 manifest.get("video_hash") != video_hash
                 or manifest.get("config_hash") != config_hash
-                or manifest.get("model_hash") != model_hash
+                or manifest.get("weight_hashes") != weight_hashes
                 or manifest.get("code_version") != current_code_version
                 or manifest.get("tracker_lib_version") != current_tracker_lib_version
             ):

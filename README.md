@@ -84,6 +84,20 @@ docker compose -f docker-compose.yml -f docker-compose.offline.yml run --rm anal
 analyze /videos/film.mp4
 ```
 
+### Enkel start på Mac med Colima
+
+Lägg filmen i `videos/` och kör följande från repo-roten:
+
+```bash
+bash scripts/start_offline_visdrone.sh videos/film.mp4
+```
+
+Skriptet kontrollerar/startar Colima och Docker, hämtar den rekommenderade
+VisDrone-s-modellen om den saknas, bygger offline-tjänsterna, kör analysen och
+startar granskningsvyn på `http://localhost:8001`. Det raderar aldrig en
+Colima-profil automatiskt; ett VZ-fel med "host agent is not" kräver normalt
+en omstart av Macen.
+
 Resultatet skrivs till ett versionerat sidecar-arkiv (`manifest.json` + JSONL)
 under `analysis-output/`. Körningen omfattar ingest (PTS-index, videohash,
 IR-PiP-lås), P1 (detektion, med utseende-embedding per detektion), P2

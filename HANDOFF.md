@@ -9,12 +9,12 @@ osäkerhet.
 
 ## Aktuell status
 
-- Gren: `codex/scene-coordinate-layer`, skapad från mergad `main` (`425826e`).
+- Grenen `codex/scene-coordinate-layer` är mergad via PR #8 (CI grön).
 - Arkitektur accepterad och dokumenterad som `DECISIONS.md` B29.
 - Implementation, svensk UI/handledning och dokumentation är klara.
 - Full lokal verifiering: 450 tester, ruff, formatkontroll och JS-syntax gröna.
-- Återstår: commit, no-mistakes och verkligt acceptanstest på filmen som
-  utlöste arbetet efter distribution.
+- Återstår: verkligt acceptanstest på filmen som utlöste arbetet efter
+  distribution.
 
 ## Beslut och kontrakt
 
@@ -32,6 +32,8 @@ osäkerhet.
 3. Mät ackumulerad drift/parallax. Om 2D-affin GMC inte räcker är nästa steg
    loop-closure/SLAM eller fusion med GPU-endpoint + drönartelemetri, inte
    hårdare gissning i detta lager.
+4. På Mac med Colima: kör `bash scripts/start_offline_visdrone.sh
+   videos/film.mp4` för den reproducerbara offline-starten med VisDrone-s.
 
 ## Bevara
 

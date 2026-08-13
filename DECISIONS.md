@@ -38,6 +38,19 @@ FastAPI ── WebSocket /ws/stream ──► webbklient (canvas)
 
 ## Beslut
 
+### B30. Reproducerbar offline-start på Mac/Colima (2026-08-13)
+- **Val:** `scripts/start_offline_visdrone.sh` samlar kontroll/start av
+  Docker/Colima, hämtning av VisDrone-s, bygge, batchanalys och start av
+  granskningsvyn. Den använder alltid containerns `/models/...`-sökväg för
+  offline-tjänsten men skriver inte över användarens `.env`.
+- **Varför:** den manuella kedjan har flera lättförväxlade arbetskataloger och
+  den skrivskyddade modellmonteringen kan inte ta emot Ultralytics automatiska
+  nedladdning. Förhandsnedladdning på värden gör körningen reproducerbar.
+- **Säkerhetsgräns:** skriptet får starta Colima men får aldrig `delete`a eller
+  återskapa dess VM automatiskt. Ett VZ "host agent is not" kräver en
+  mänsklig omstart/diagnos eftersom en återställning kan förstöra lokala
+  Docker-volymer.
+
 ### B1. Detektion: Ultralytics YOLO, modell utbytbar via env
 - **Val:** `yolo11n.pt` (COCO) som standard, konfigurerbar via `MODEL` (env). Modellens klassnamn introspekteras: klasser med namn `person`, `pedestrian`, `people` behandlas som människa — därmed fungerar både COCO-modeller och VisDrone-tränade modeller (t.ex. yolov8/yolo11 finetunad på VisDrone) utan kodändring.
 - **Varför:** COCO-vikter är officiella, reproducerbara och nedladdningsbara vid Docker-build (förutsägbarhet). VisDrone-vikter ger bättre träff på små människor från hög höjd men är tredjeparts — de stöds genom att montera in en .pt-fil och sätta `MODEL=/models/visdrone.pt`.

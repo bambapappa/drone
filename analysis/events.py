@@ -37,7 +37,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from analysis.behavior import STATUS_STILL, STATUS_TOWARD, BehaviorAnalyzer, BehaviorConfig
 from analysis.irrational import CATEGORY_IRRATIONELL, IrrationalConfig, derive_irrational_events
@@ -52,6 +52,8 @@ CATEGORY_MOT_FARA = "MOT_FARA"
 CATEGORY_HAZARD = "HAZARD"
 
 ALL_CATEGORIES = (CATEGORY_STILLA, CATEGORY_MOT_FARA, CATEGORY_IRRATIONELL, CATEGORY_HAZARD)
+
+DangerResolver = Callable[[int, int | None], "tuple[float, float] | None"]
 
 
 def _event_id(category: str, seq: int) -> str:
@@ -150,8 +152,7 @@ def derive_behavior_events(
     frame_w: int,
     frame_h: int,
     config: OfflineConfig,
-    danger_px: tuple[float, float] | None = None,
-    danger_scene_by_segment: dict[int, tuple[float, float]] | None = None,
+    danger_for_frame: DangerResolver | None = None,
 ) -> list[Event]:
     """Replay BehaviorAnalyzer over a tracklet table and diff into events.
 
@@ -167,12 +168,12 @@ def derive_behavior_events(
     applicable (HAZARD is null by construction; person-keyed categories are
     null only when P3 was skipped).
 
-    `danger_px` is the danger point in pixel coordinates (frame-space),
-    optional. When None, MOT_FARA cannot fire (the analyzer's
-    toward_danger check requires a danger point to compute the direction
-    cosine against). In the offline P5 pass, this is fed per-frame from the
-    SituationAnalyzer's detected fire/smoke position; retroactive operator-
-    marked queries are Phase 4.
+    `danger_for_frame(frame_no, segment) -> (x, y) | None` is the danger point
+    in the analyzer's coordinate space, looked up per frame. When None (or
+    when it returns None for a frame), MOT_FARA cannot fire that frame —
+    STILLA can. The engine supplies the per-frame fire/smoke position
+    (scene-transformed per its own frame); the review layer supplies a
+    constant resolver for an operator-placed marker.
     """
     if fps <= 0:
         return []
@@ -217,9 +218,7 @@ def derive_behavior_events(
             # motion normalization and may include camera scale/rotation.
             aspect = max((x1 - x0) / raw_box_h, 0.0)
             t = frame_no / fps
-            danger = danger_px
-            if danger_scene_by_segment is not None and segment is not None:
-                danger = danger_scene_by_segment.get(segment)
+            danger = danger_for_frame(frame_no, segment) if danger_for_frame is not None else None
             status, prone, speed = analyzer.update(
                 pid=tid, t=t, stab_pos=stab_pos, box_h=box_h, aspect=aspect, danger_stab=danger
             )

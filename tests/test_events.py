@@ -143,7 +143,7 @@ class TestBehaviorEventDiff:
             frame_w=1280,
             frame_h=720,
             config=_beh_config(),
-            danger_px=danger_px,
+            danger_for_frame=lambda fn, s: danger_px,
         )
         mot = [e for e in events if e.category == CATEGORY_MOT_FARA]
         assert len(mot) >= 1
@@ -161,9 +161,38 @@ class TestBehaviorEventDiff:
             frame_w=1280,
             frame_h=720,
             config=_beh_config(),
-            danger_px=None,
+            danger_for_frame=None,
         )
         assert len([e for e in events if e.category == CATEGORY_MOT_FARA]) == 0
+
+    def test_moving_danger_tracked_per_frame_not_averaged(self):
+        # Fire relocates from far-right to far-left mid-film. Person walks +x
+        # throughout. Per-frame: while danger is to the right (frames 0..59) the
+        # person moves toward it -> MOT_FARA fires; once danger flips left
+        # (frames 60..119) the person moves away -> no MOT_FARA in that span.
+        # The MEAN danger x = 0 sits behind the person (who starts at x=50) for
+        # the whole film, so a constant-mean resolver would fire ZERO events.
+        fps = 10.0
+        frames = list(range(120))
+        xyxy_seq = [(50.0 + i * 4.0, 100.0, 80.0 + i * 4.0, 180.0) for i in range(120)]
+        rows = _trk(1, frames, xyxy_seq, fps=fps)
+
+        def danger_for_frame(frame_no, segment):
+            return (1000.0, 140.0) if frame_no < 60 else (-1000.0, 140.0)
+
+        events = derive_behavior_events(
+            rows, person_by_tracklet={}, fps=fps, frame_w=1280, frame_h=720,
+            config=_beh_config(), danger_for_frame=danger_for_frame,
+        )
+        mot = [e for e in events if e.category == CATEGORY_MOT_FARA]
+        assert len(mot) >= 1  # per-frame tracks the right-side danger
+
+        # Proof the mean would have missed it: constant resolver at the mean (0,140).
+        mean_events = derive_behavior_events(
+            rows, person_by_tracklet={}, fps=fps, frame_w=1280, frame_h=720,
+            config=_beh_config(), danger_for_frame=lambda fn, s: (0.0, 140.0),
+        )
+        assert len([e for e in mean_events if e.category == CATEGORY_MOT_FARA]) == 0
 
     def test_scene_segment_break_resets_stillness_history(self):
         # Ten seconds stationary would normally fire STILLA. Split into

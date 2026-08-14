@@ -16,6 +16,7 @@ synthetic BGR frames drive the analyzers deterministically.
 
 from __future__ import annotations
 
+import cv2
 import numpy as np
 
 from analysis.events import (
@@ -25,6 +26,7 @@ from analysis.events import (
     Event,
     build_danger_resolver,
     derive_behavior_events,
+    derive_events,
     derive_hazard_events,
 )
 from analysis.scene import transform_point
@@ -335,6 +337,139 @@ class TestEventSerialization:
         assert d2["person_id"] == 4
         assert d2["evidence"]["tracklet_id"] == 7
         assert d2["review"]["state"] == "unreviewed"
+
+
+class TestSceneCompensatedSmoke:
+    """derive_events: smoke motion measured in scene space (B31/B32).
+
+    The camera's own motion is warped out with P2's persisted scene
+    transforms before the frame diff, so scene-static gray ground under a
+    panning drone is no longer "smoke", and a scene-moving gray blob stays
+    detectable even when the camera pans with it. Unlinked pairs (segment
+    break / missing transform) give an empty motion mask that frame — never
+    a guess across a visual loss.
+
+    Fixtures verified against smoke_mask directly: legacy fires/suppresses
+    exactly opposite to the compensated path, so each test is honest in
+    both directions (not green against empty output).
+    """
+
+    FPS = 10.0
+
+    def _scene_frames(self, n: int) -> dict[int, dict]:
+        # Camera pans so that scene-static content moves +8 px/frame in the
+        # frame (test 2's blob rides exactly against it) => frame_to_scene
+        # shifts -8*i, scene_to_frame +8*i, and the prev->cur composite
+        # s2f(n) @ f2s(n-1) is a pure +8 translation. The slower +3 px/frame
+        # variant (tests 1/3) keeps the rectangle fully on-frame for all 30
+        # frames — content sliding in from off-frame is genuinely new and
+        # cannot be compensated.
+        scene_frames = {}
+        for i in range(n):
+            f2s = np.float32([[1, 0, -8.0 * i], [0, 1, 0], [0, 0, 1]])
+            s2f = np.float32([[1, 0, 8.0 * i], [0, 1, 0], [0, 0, 1]])
+            scene_frames[i] = {"frame_to_scene": f2s, "scene_to_frame": s2f, "scene_segment": 0}
+        return scene_frames
+
+    def _pan_frames(self) -> list[np.ndarray]:
+        # Gray rectangle, scene-static, drifting +3 px/frame in frame (fully
+        # on-frame throughout); transforms for the +3 pan are built inline.
+        frames = []
+        for i in range(30):
+            img = np.full((90, 160, 3), (40, 120, 60), np.uint8)
+            cv2.rectangle(img, (10 + 3 * i, 10), (60 + 3 * i, 50), (90, 110, 105), -1)
+            frames.append(img)
+        return frames
+
+    @staticmethod
+    def _pan_scene_frames(n: int) -> dict[int, dict]:
+        scene_frames = {}
+        for i in range(n):
+            f2s = np.float32([[1, 0, -3.0 * i], [0, 1, 0], [0, 0, 1]])
+            s2f = np.float32([[1, 0, 3.0 * i], [0, 1, 0], [0, 0, 1]])
+            scene_frames[i] = {"frame_to_scene": f2s, "scene_to_frame": s2f, "scene_segment": 0}
+        return scene_frames
+
+    def test_pan_over_static_gray_scene_no_false_smoke(self):
+        # Scene-static gray rectangle under a panning camera: without the
+        # wiring the legacy frame diff sees motion (blob area ~0.0085,
+        # above min_area 0.001, every frame) and fabricates a smoke event;
+        # with the persisted transforms the rectangle is warped back onto
+        # itself (verified: the compensated mask is empty) and no HAZARD
+        # event may appear.
+        frames = self._pan_frames()
+        cfg = _sit_config()
+        cfg.hazard_min_area = 0.001
+        cfg.hazard_hold_s = 0.1
+        events = derive_events(
+            [],
+            person_by_tracklet={},
+            frames=frames,
+            fps=self.FPS,
+            frame_w=160,
+            frame_h=90,
+            config=cfg,
+            ignore_regions=None,
+            scene_frames=self._pan_scene_frames(30),
+        )
+        assert not any(e.category == CATEGORY_HAZARD for e in events)
+
+    def test_smoke_scene_motion_fires_under_camera_pan(self):
+        # Gray blob stationary in the FRAME (it drifts -8 px/frame in scene
+        # while the camera pans +8): the legacy frame diff sees no motion at
+        # the blob (verified: legacy mask empty), only the scene-compensated
+        # path isolates it (compensated blob area ~0.008 > min_area 0.001),
+        # so a HAZARD smoke event must appear once derive_events passes
+        # prev_to_cur through.
+        frames = []
+        for _ in range(30):
+            img = np.full((90, 160, 3), (40, 120, 60), np.uint8)
+            cv2.circle(img, (100, 60), 8, (100, 115, 110), -1)
+            frames.append(img)
+        cfg = _sit_config()
+        cfg.hazard_min_area = 0.001
+        cfg.hazard_hold_s = 0.1
+        events = derive_events(
+            [],
+            person_by_tracklet={},
+            frames=frames,
+            fps=self.FPS,
+            frame_w=160,
+            frame_h=90,
+            config=cfg,
+            ignore_regions=None,
+            scene_frames=self._scene_frames(30),
+        )
+        assert any(e.category == CATEGORY_HAZARD and e.evidence["kind"] == "smoke" for e in events)
+
+    def test_segment_break_no_crash_no_smoke(self):
+        # Same panning gray rectangle, but the scene record switches segment
+        # at i=15 and carries no transforms from there on. The linked pairs
+        # (1..14) compensate to an empty mask; the unlinked pairs must give
+        # an empty mask too — no crash, and no smoke event bridging the
+        # break. The assertion is honest: hold_s=0.1 and min_area=0.001 are
+        # small enough that any bridged/guessed mask from frame 15 on (the
+        # rectangle keeps moving in frame) would produce a smoke event —
+        # the legacy path over the same frames fires one.
+        frames = self._pan_frames()
+        scene_frames = self._pan_scene_frames(15)
+        for i in range(15, 30):
+            scene_frames[i] = {"frame_to_scene": None, "scene_to_frame": None, "scene_segment": 1}
+        cfg = _sit_config()
+        cfg.hazard_min_area = 0.001
+        cfg.hazard_hold_s = 0.1
+        events = derive_events(
+            [],
+            person_by_tracklet={},
+            frames=frames,
+            fps=self.FPS,
+            frame_w=160,
+            frame_h=90,
+            config=cfg,
+            ignore_regions=None,
+            scene_frames=scene_frames,
+        )
+        assert not any(e.category == CATEGORY_HAZARD for e in events)
 
 
 # ---- helpers ----

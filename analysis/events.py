@@ -39,10 +39,12 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable
 
+import numpy as np
+
 from analysis.behavior import STATUS_STILL, STATUS_TOWARD, BehaviorAnalyzer, BehaviorConfig
 from analysis.irrational import CATEGORY_IRRATIONELL, IrrationalConfig, derive_irrational_events
 from analysis.orchestrator import OfflineConfig
-from analysis.situation import SituationAnalyzer
+from analysis.situation import WORK_W, SituationAnalyzer
 
 # Internal category enum values stay English (per AGENTS.md convention); the
 # GUI maps these to Swedish display text. A future category (THREAT, ...)
@@ -569,6 +571,13 @@ def derive_events(
     (0..1); behavior takes pixel positions. We convert per-frame so the
     spatio-temporal direction check operates in the same coordinate space as
     the tracklet boxes.
+
+    Smoke is measured in scene space: when consecutive frames are linked by
+    P2's persisted scene transforms (same segment, both records carrying
+    matrices), the prev→cur affine is passed to the analyzer so the camera's
+    own motion is warped out before the frame diff; an unlinked pair (segment
+    break / missing transform) yields an empty motion mask that frame — never
+    a guess across a visual loss.
     """
     # First pass: run the situation analyzer to learn the per-frame danger
     # point (fire/smoke position). SituationAnalyzer only needs frames in
@@ -591,9 +600,31 @@ def derive_events(
     danger_px_by_frame: dict[int, tuple[float, float] | None] = {}
 
     frame_no = 0
+    prev_scene_rec: dict[str, Any] | None = None
+    # The smoke diff runs on the analyzer's downscaled frame (WORK_W wide),
+    # so the prev→cur affine — in full-resolution frame pixels — is scaled to
+    # that space before it reaches cv2.warpAffine.
+    warp_scale = WORK_W / float(frame_w) if frame_w > 0 else 1.0
     for frame in frames:
         t = frame_no / fps
-        state = sit.update(frame, t, danger_norm=None, ignore=ignore_regions)
+        scene_rec = (scene_frames or {}).get(frame_no)
+        prev_to_cur = None
+        if (
+            scene_rec is not None
+            and scene_rec.get("frame_to_scene") is not None
+            and scene_rec.get("scene_to_frame") is not None
+            and prev_scene_rec is not None
+            and prev_scene_rec.get("frame_to_scene") is not None
+            and int(scene_rec.get("scene_segment", -1)) == int(prev_scene_rec.get("scene_segment", -2))
+        ):
+            rel = np.asarray(scene_rec["scene_to_frame"], dtype=np.float32) @ np.asarray(
+                prev_scene_rec["frame_to_scene"], dtype=np.float32
+            )
+            prev_to_cur = rel[:2, :3] * warp_scale
+        state = sit.update(
+            frame, t, danger_norm=None, ignore=ignore_regions, prev_to_cur=prev_to_cur, scene_motion=True
+        )
+        prev_scene_rec = scene_rec
         if state.fire is not None:
             fire_timeline.append((frame_no, True, state.fire.area))
             danger_px_by_frame[frame_no] = (state.fire.pos[0] * frame_w, state.fire.pos[1] * frame_h)

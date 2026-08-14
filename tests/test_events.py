@@ -183,16 +183,26 @@ class TestBehaviorEventDiff:
             return (1000.0, 140.0) if frame_no < 60 else (-1000.0, 140.0)
 
         events = derive_behavior_events(
-            rows, person_by_tracklet={}, fps=fps, frame_w=1280, frame_h=720,
-            config=_beh_config(), danger_for_frame=danger_for_frame,
+            rows,
+            person_by_tracklet={},
+            fps=fps,
+            frame_w=1280,
+            frame_h=720,
+            config=_beh_config(),
+            danger_for_frame=danger_for_frame,
         )
         mot = [e for e in events if e.category == CATEGORY_MOT_FARA]
         assert len(mot) >= 1  # per-frame tracks the right-side danger
 
         # Proof the mean would have missed it: constant resolver at the mean (0,140).
         mean_events = derive_behavior_events(
-            rows, person_by_tracklet={}, fps=fps, frame_w=1280, frame_h=720,
-            config=_beh_config(), danger_for_frame=lambda fn, s: (0.0, 140.0),
+            rows,
+            person_by_tracklet={},
+            fps=fps,
+            frame_w=1280,
+            frame_h=720,
+            config=_beh_config(),
+            danger_for_frame=lambda fn, s: (0.0, 140.0),
         )
         assert len([e for e in mean_events if e.category == CATEGORY_MOT_FARA]) == 0
 

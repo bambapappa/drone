@@ -109,6 +109,7 @@ def recompute_mot_fara(
 
         def danger_for_frame(fn, s):
             return pt
+
     events = derive_behavior_events(
         tracklet_rows,
         person_by_tracklet=person_by_tracklet,

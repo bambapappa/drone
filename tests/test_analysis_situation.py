@@ -6,7 +6,7 @@ Carried forward from tests/test_situation.py — same logic, now importing from 
 import cv2
 import numpy as np
 
-from analysis.situation import SituationAnalyzer, fire_mask
+from analysis.situation import SituationAnalyzer, fire_mask, smoke_mask
 
 
 def solid(bgr, w=320, h=180):
@@ -121,3 +121,44 @@ def test_base_warns_on_dead_end_pocket():
         state = an.update(frame, i * 0.2, (0.1, 0.05))
     assert state.base is not None
     assert not any("möjlig utväg" in r for r in state.base_reasons)
+
+
+def _frame_with_gray_block(shift=0, blob_shift=0, w=160, h=90):
+    """Gray building-ish block + a gray blob that may drift in scene (WORK_W scale).
+
+    `shift` is the camera pan: scene-static content moves +shift px in the
+    image, matching warpAffine's forward-map convention for +dx affines."""
+    img = np.full((h, w, 3), (40, 120, 60), np.uint8)  # greenish background
+    cv2.rectangle(img, (10 + shift, 10), (60 + shift, 50), (90, 110, 105), -1)  # static gray building
+    cv2.circle(img, (120 + blob_shift + shift, 60), 8, (100, 115, 110), -1)  # gray blob
+    return img
+
+
+def _shift_affine(dx, dy):
+    return np.float32([[1, 0, dx], [0, 1, dy]])
+
+
+class TestSceneCompensatedSmoke:
+    def test_static_scene_camera_pan_no_smoke_when_compensated(self):
+        # Camera pans +8px/frame; building and blob are scene-static.
+        prev, cur = _frame_with_gray_block(0, 0), _frame_with_gray_block(8, 0)
+        pg, g = cv2.cvtColor(prev, cv2.COLOR_BGR2GRAY), cv2.cvtColor(cur, cv2.COLOR_BGR2GRAY)
+        legacy = smoke_mask(prev, pg, g)  # uncompensated
+        comp = smoke_mask(prev, pg, g, prev_to_cur=_shift_affine(8, 0))
+        assert legacy.sum() > 0  # camera motion masquerades as motion — the measured failure
+        assert comp.sum() == 0  # scene-static: no honest smoke motion
+
+    def test_scene_drifting_blob_detected_when_compensated(self):
+        # Camera pans +8; blob ALSO drifts +6 in scene (image move 14).
+        prev, cur = _frame_with_gray_block(0, 0), _frame_with_gray_block(8, 6)
+        pg, g = cv2.cvtColor(prev, cv2.COLOR_BGR2GRAY), cv2.cvtColor(cur, cv2.COLOR_BGR2GRAY)
+        comp = smoke_mask(prev, pg, g, prev_to_cur=_shift_affine(8, 0))
+        assert comp.sum() > 0  # the 6px scene drift survives compensation
+
+    def test_update_scene_motion_unlinked_pair_gives_empty_mask(self):
+        sit = SituationAnalyzer(hold_s=0.0)
+        s1 = sit.update(_frame_with_gray_block(0, 0), 0.0, danger_norm=None,
+                        prev_to_cur=None, scene_motion=True)
+        # No honest motion signal this frame: smoke None — never guess across a
+        # visual loss (B29 loss rule), hold() rides over single frames.
+        assert s1.smoke is None

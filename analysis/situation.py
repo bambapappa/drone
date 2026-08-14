@@ -40,13 +40,27 @@ def fire_mask(bgr_small: np.ndarray) -> np.ndarray:
     return m.astype(np.uint8)
 
 
-def smoke_mask(bgr_small: np.ndarray, prev_gray: np.ndarray | None, gray: np.ndarray) -> np.ndarray:
-    """Low-saturation gray regions that move (separates smoke from gray asphalt)."""
+def smoke_mask(
+    bgr_small: np.ndarray,
+    prev_gray: np.ndarray | None,
+    gray: np.ndarray,
+    prev_to_cur: np.ndarray | None = None,
+) -> np.ndarray:
+    """Low-saturation gray regions that move (separates smoke from gray asphalt).
+
+    With `prev_to_cur` (2x3 affine mapping previous-frame pixels into the
+    current frame, from P2's persisted scene transforms), the motion test runs
+    in SCENE space: the camera's own motion is warped out first, so a static
+    gray building under a moving drone no longer reads as motion (measured
+    failure, DECISIONS B31). Without it, legacy frame-diff behavior is
+    bit-identical for existing callers."""
     hsv = cv2.cvtColor(bgr_small, cv2.COLOR_BGR2HSV)
     s, v = hsv[..., 1], hsv[..., 2]
     static = (s < 60) & (v > 70) & (v < 230)
     if prev_gray is None or prev_gray.shape != gray.shape:
         return np.zeros_like(s, dtype=np.uint8)
+    if prev_to_cur is not None:
+        prev_gray = cv2.warpAffine(prev_gray, prev_to_cur, (gray.shape[1], gray.shape[0]))
     motion = cv2.absdiff(gray, prev_gray) > 6
     m = static & motion
     m = cv2.morphologyEx(m.astype(np.uint8), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
@@ -148,6 +162,8 @@ class SituationAnalyzer:
         t: float,
         danger_norm: tuple[float, float] | None,
         ignore: list[tuple[float, float, float, float]] | None = None,
+        prev_to_cur: np.ndarray | None = None,
+        scene_motion: bool = False,
     ) -> SituationState:
         h, w = frame_bgr.shape[:2]
         small = cv2.resize(frame_bgr, (WORK_W, max(2, int(h * WORK_W / w))))
@@ -160,7 +176,16 @@ class SituationAnalyzer:
         gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
 
         fm = fire_mask(small)
-        sm = smoke_mask(small, self._prev_gray, gray)
+        if scene_motion:
+            if self._prev_gray is None or prev_to_cur is None:
+                # Unlinked pair (scene loss / segment break / missing transform):
+                # no honest motion signal this frame — never guess across a
+                # visual loss (B29 loss rule). hold() rides over single frames.
+                sm = np.zeros_like(gray)
+            else:
+                sm = smoke_mask(small, self._prev_gray, gray, prev_to_cur=prev_to_cur)
+        else:
+            sm = smoke_mask(small, self._prev_gray, gray)
 
         fire_blob = _largest_blob(fm)
         if fire_blob is not None and self.fire_require_smoke and not self._smoke_near(sm, fire_blob[0]):

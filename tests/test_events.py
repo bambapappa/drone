@@ -23,9 +23,11 @@ from analysis.events import (
     CATEGORY_MOT_FARA,
     CATEGORY_STILLA,
     Event,
+    build_danger_resolver,
     derive_behavior_events,
     derive_hazard_events,
 )
+from analysis.scene import transform_point
 
 
 def _trk(
@@ -361,3 +363,39 @@ def _solid_frame(b: int, g: int, r: int, w: int = 320, h: int = 240) -> np.ndarr
     frame = np.zeros((h, w, 3), dtype=np.uint8)
     frame[:] = (b, g, r)
     return frame
+
+
+class TestBuildDangerResolver:
+    """build_danger_resolver: per-frame danger in the analyzer's space.
+
+    The whole point of the #1 fix: the resolver returns each frame's own
+    danger point (scene-transformed per its own frame_to_scene when scene
+    data exists, else raw pixel) — never a mean collapsed across the film.
+    """
+
+    def test_raw_pixel_per_frame_when_no_scene_data(self):
+        danger_px_by_frame = {0: (100.0, 200.0), 1: (300.0, 400.0)}
+        resolver = build_danger_resolver(danger_px_by_frame, scene_frames=None)
+        assert resolver is not None
+        assert resolver(0, None) == (100.0, 200.0)
+        assert resolver(1, None) == (300.0, 400.0)
+        assert resolver(2, None) is None  # frame without danger
+
+    def test_scene_transform_uses_each_frames_own_matrix(self):
+        # Same pixel danger in two frames, different per-frame transforms ->
+        # different scene points (NOT a segment mean).
+        m0 = np.array([[1.0, 0.0, 10.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+        m1 = np.array([[1.0, 0.0, 50.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+        scene_frames = {
+            0: {"frame_to_scene": m0, "scene_segment": 0},
+            1: {"frame_to_scene": m1, "scene_segment": 0},
+        }
+        danger_px_by_frame = {0: (100.0, 100.0), 1: (100.0, 100.0)}
+        resolver = build_danger_resolver(danger_px_by_frame, scene_frames)
+        assert resolver(0, 0) == transform_point(m0, (100.0, 100.0))
+        assert resolver(1, 0) == transform_point(m1, (100.0, 100.0))
+        assert resolver(0, 0) != resolver(1, 0)
+
+    def test_none_when_no_danger_ever(self):
+        assert build_danger_resolver({}, scene_frames=None) is None
+        assert build_danger_resolver({0: None, 1: None}, scene_frames=None) is None

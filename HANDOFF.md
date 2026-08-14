@@ -2,7 +2,8 @@
 
 ## Pågår just nu
 
-- ~~[Claude 2026-08-13] Fix #1 (MOT_FARA per-bildruta-fara — ta bort fabricerad medel-farpunkt; `derive_behavior_events` → `DangerResolver`) + #2 (transient-ärlighet i unik-räkning, endast presentation). Gren `fix/mot-fara-per-frame-and-transient-honesty`. Plan: `handoff/projekt/drone/PLAN-2026-08-13-mot-fara-per-bildruta-och-transient-arlighet.md`.~~ → klart, PR öppnas mot main (merge = mänskligt beslut).
+- [Claude 2026-08-14] Scenkompenserad rökdetektion (offline) — `smoke_mask` warpas med persisterad `prev_to_cur`-affin; färg/trösklar orörda. Gren `fix/smoke-scene-compensated-motion`, **stackad på PR #10** (merga #10 först). Spec/plan: `handoff/projekt/drone/SPEC-2026-08-14-rokdetektion-scenkompenserad.md` + `PLAN-2026-08-14-…`.
+- ~~[Claude 2026-08-13] Fix #1 (MOT_FARA per-bildruta-fara — ta bort fabricerad medel-farpunkt; `derive_behavior_events` → `DangerResolver`) + #2 (transient-ärlighet i unik-räkning, endast presentation). Gren `fix/mot-fara-per-frame-and-transient-honesty`. Plan: `handoff/projekt/drone/PLAN-2026-08-13-mot-fara-per-bildruta-och-transient-arlighet.md`.~~ → klart, PR #10 öppen (merge = mänskligt beslut).
 
 ## Mål
 

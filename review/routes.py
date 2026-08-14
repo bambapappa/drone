@@ -543,12 +543,17 @@ async def get_persons(run_id: str, settings: ReviewSettings = Depends(get_settin
     rather than silently dropped.
 
     Two counts, deliberately distinct:
-      `count`        — every projected person row, transient ones included.
-      `unique_count` — the honest unique-person headline: rows whose
-                       confirmation_state is `confirmed` or `manual`
-                       (transient excluded). This is NOT the engine's
-                       p3.stats.confirmed_persons, which predates the
-                       corrections layer and knows nothing of `manual`.
+      `count`           — every projected person row, transient ones included.
+      `unique_count`    — the honest unique-person headline: rows whose
+                          confirmation_state is `confirmed` or `manual`
+                          (transient excluded). This is NOT the engine's
+                          p3.stats.confirmed_persons, which predates the
+                          corrections layer and knows nothing of `manual`.
+      `transient_count` — `count - unique_count`: short sightings (< the 2s
+                          confirm threshold, B16) excluded from the headline.
+                          Consumers MUST show it alongside `unique_count` so a
+                          bare 0 can never be read as "nobody seen" when
+                          someone was briefly observed (the rescue-search case).
 
     `engine_uncertainty` is deliberately read unchanged from this run's P3
     manifest stats.  Identity corrections change the projected count, but a
@@ -562,10 +567,16 @@ async def get_persons(run_id: str, settings: ReviewSettings = Depends(get_settin
         raise HTTPException(status_code=409, detail="P3 har inte körts")
     projection = _corrected_projection(store, _annotation_store(settings, run_id))
     non_transient = ("confirmed", STATE_MANUAL)
+    unique_count = sum(1 for p in projection.persons if p.get("confirmation_state") in non_transient)
     return {
         "persons": projection.persons,
         "count": len(projection.persons),
-        "unique_count": sum(1 for p in projection.persons if p.get("confirmation_state") in non_transient),
+        "unique_count": unique_count,
+        # Transient = short sightings (< p3_confirm_s, B16) excluded from
+        # unique_count. Surfaced explicitly so a consumer never reads a bare
+        # unique_count of 0 as "nobody seen" when someone was briefly observed
+        # — the rescue-search danger. count == unique_count + transient_count.
+        "transient_count": len(projection.persons) - unique_count,
         "engine_uncertainty": {
             "run_id": store.manifest.get("run_id", run_id),
             "pass": p3,

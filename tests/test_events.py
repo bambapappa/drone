@@ -471,6 +471,60 @@ class TestSceneCompensatedSmoke:
         )
         assert not any(e.category == CATEGORY_HAZARD for e in events)
 
+    def test_rotation_scaling_only_translation_downscale(self):
+        # Pins the S·A·S⁻¹ downscale: frame_w=320 (≠ WORK_W=160, so
+        # warp_scale=0.5) with a NON-identity linear part — the camera
+        # rotates 10°/frame and pans +4 px/frame (full-res) over a
+        # scene-static gray rectangle. Scaling the whole 2x3 by 0.5 would
+        # shrink the rotation into a 0.5·R zoom+rotation, mis-warp the
+        # prev frame and reintroduce camera-motion "smoke"; only the
+        # translation column may scale. Legacy (no scene data) must fire.
+        cs = np.float32([180.0, 110.0])  # scene anchor under frame center at i=0
+        cf = np.float32([160.0, 90.0])
+        scene = np.full((400, 640, 3), (40, 120, 60), np.uint8)
+        cv2.rectangle(scene, (208, 80), (268, 140), (90, 110, 105), -1)
+        frames, scene_frames = [], {}
+        for i in range(30):
+            th = np.deg2rad(10.0 * i)
+            c, s = np.cos(th), np.sin(th)
+            rot = np.float32([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+            t_pos = np.float32([[1, 0, cf[0] + 4.0 * i], [0, 1, cf[1]], [0, 0, 1]])
+            t_neg = np.float32([[1, 0, -cs[0]], [0, 1, -cs[1]], [0, 0, 1]])
+            s2f = t_pos @ rot @ t_neg
+            frames.append(cv2.warpAffine(scene, s2f[:2], (320, 180)))
+            scene_frames[i] = {
+                "frame_to_scene": np.linalg.inv(s2f),
+                "scene_to_frame": s2f,
+                "scene_segment": 0,
+            }
+        cfg = _sit_config()
+        cfg.hazard_min_area = 0.001
+        cfg.hazard_hold_s = 0.1
+        common = dict(
+            person_by_tracklet={},
+            frames=frames,
+            fps=self.FPS,
+            frame_w=320,
+            frame_h=180,
+            config=cfg,
+            ignore_regions=None,
+        )
+        # Honest fixture check (same style as the tests above): the legacy
+        # frame diff over the same downscaled frames sees the pan+rotation
+        # as motion, so without compensation this WOULD be "smoke".
+        from analysis.situation import smoke_mask
+
+        small = [cv2.resize(f, (160, 90)) for f in frames]
+        legacy_px = sum(
+            int(smoke_mask(small[i], cv2.cvtColor(small[i - 1], cv2.COLOR_BGR2GRAY),
+                           cv2.cvtColor(small[i], cv2.COLOR_BGR2GRAY)).sum())
+            for i in range(1, len(small))
+        )
+        assert legacy_px > 1000  # legacy fires without compensation
+        # Compensated: correct S·A·S⁻¹ scaling → no smoke event.
+        events = derive_events([], scene_frames=scene_frames, **common)
+        assert not any(e.category == CATEGORY_HAZARD for e in events)
+
 
 # ---- helpers ----
 

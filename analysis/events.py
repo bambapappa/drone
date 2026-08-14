@@ -620,7 +620,12 @@ def derive_events(
             rel = np.asarray(scene_rec["scene_to_frame"], dtype=np.float32) @ np.asarray(
                 prev_scene_rec["frame_to_scene"], dtype=np.float32
             )
-            prev_to_cur = rel[:2, :3] * warp_scale
+            rel23 = np.asarray(rel, dtype=np.float32)[:2, :3]
+            # S·A·S⁻¹ for uniform scale s = warp_scale: translation scales by
+            # s, the linear part is invariant. (situation.py resizes by width
+            # with preserved aspect, so both axes scale by the same s.)
+            rel23[:, 2] *= warp_scale
+            prev_to_cur = rel23
         state = sit.update(
             frame, t, danger_norm=None, ignore=ignore_regions, prev_to_cur=prev_to_cur, scene_motion=True
         )

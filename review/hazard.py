@@ -90,12 +90,25 @@ def recompute_mot_fara(
     """
     config = _config_from_manifest(store)
     tracklet_rows = list(store.iter_tracklets(OfflineOrchestrator.P2_PASS_NAME))
-    danger_scene_by_segment = None
+    # The operator's marker is ONE chosen point -> constant across frames. A
+    # scene marker applies only within its segment (frames outside the segment
+    # resolve to None, so MOT_FARA can't fire there); a pixel marker applies to
+    # every frame. Expressed as a per-frame DangerResolver, this is identical
+    # to the old danger_scene_by_segment / danger_px semantics — the review
+    # path was never fabricating (the human chose one point), only the engine's
+    # mean-collapse was.
+    danger_for_frame = None
     if hazard_scene is not None and hazard_segment is not None:
-        danger_scene_by_segment = {int(hazard_segment): hazard_scene}
-    danger_px = None
-    if hazard_x is not None and hazard_y is not None:
-        danger_px = (hazard_x, hazard_y)
+        seg = int(hazard_segment)
+
+        def danger_for_frame(fn, s):
+            return hazard_scene if s == seg else None
+
+    elif hazard_x is not None and hazard_y is not None:
+        pt = (hazard_x, hazard_y)
+
+        def danger_for_frame(fn, s):
+            return pt
     events = derive_behavior_events(
         tracklet_rows,
         person_by_tracklet=person_by_tracklet,
@@ -103,7 +116,6 @@ def recompute_mot_fara(
         frame_w=0,
         frame_h=0,
         config=config,
-        danger_px=danger_px,
-        danger_scene_by_segment=danger_scene_by_segment,
+        danger_for_frame=danger_for_frame,
     )
     return [ev.to_dict() for ev in events if ev.category == CATEGORY_MOT_FARA]

@@ -51,6 +51,23 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
+def format_unique_summary(*, confirmed: int, uncertain: int, transient: int, confirm_s: float) -> str:
+    """One-line honest unique-person summary for the CLI.
+
+    Never shows a bare unique count when short sightings (transients) exist:
+    in a rescue context "0 unika" must not be readable as "nobody seen" when
+    someone was briefly observed. The 2s confirm threshold (DECISIONS B16) is
+    NOT changed by this — it is presentation only.
+    """
+    parts = [f"{confirmed} unika"]
+    if uncertain:
+        parts.append(f"varav {uncertain} osäkra sammanslagningar")
+    line = "Unika personer:   " + ", ".join(parts)
+    if transient:
+        line += f" (samt {transient} korta observationer < {confirm_s:g}s)"
+    return line
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(
         description="Offline drone video analysis — batch ingest + P1 detection.",
@@ -329,14 +346,13 @@ def main() -> None:
     # job is to surface the ambiguity, never hide it behind one precise number.
     confirmed = result.confirmed_count
     uncertain = result.uncertain_merges
-    if uncertain:
-        print(f"Unika personer:   {confirmed} unika, varav {uncertain} osäkra sammanslagningar")
-    else:
-        print(f"Unika personer:   {confirmed} unika")
+    transient = len(result.persons) - confirmed
     print(
-        f"  (totalt {len(result.persons)} identiteter, varav "
-        f"{len(result.persons) - confirmed} transienta < {config.p3_confirm_s:g}s)"
+        format_unique_summary(
+            confirmed=confirmed, uncertain=uncertain, transient=transient, confirm_s=config.p3_confirm_s
+        )
     )
+    print(f"  (totalt {len(result.persons)} identiteter)")
 
     # ---- P5 Event Derivation Pass ----
     if args.no_p5:

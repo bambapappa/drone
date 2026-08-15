@@ -157,8 +157,9 @@ class TestSceneCompensatedSmoke:
 
     def test_update_scene_motion_unlinked_pair_gives_empty_mask(self):
         sit = SituationAnalyzer(hold_s=0.0)
-        s1 = sit.update(_frame_with_gray_block(0, 0), 0.0, danger_norm=None,
-                        prev_to_cur=None, scene_motion=True)
+        s1 = sit.update(
+            _frame_with_gray_block(0, 0), 0.0, danger_norm=None, prev_to_cur=None, scene_motion=True
+        )
         # No honest motion signal this frame: smoke None — never guess across a
         # visual loss (B29 loss rule), hold() rides over single frames.
         assert s1.smoke is None
@@ -196,12 +197,17 @@ class TestWindowedReferenceAndTexture:
         # the 3-frame span even though the consecutive diff would see it.
         ident = np.float32([[1, 0, 0], [0, 1, 0]])
         positions = [60] * 8 + [100, 60]  # single-frame excursion at n-1
-        sit = SituationAnalyzer(hold_s=0.0, min_area=0.004,
-                                smoke_window_s=0.32, smoke_texture_min=0.0)
+        sit = SituationAnalyzer(hold_s=0.0, min_area=0.004, smoke_window_s=0.32, smoke_texture_min=0.0)
         state = None
         for i, cx in enumerate(positions):
-            state = sit.update(_textured_gray_blob_frame(cx=cx), i * 0.1, None,
-                               prev_to_cur=ident, scene_motion=True, ref_lag=3)
+            state = sit.update(
+                _textured_gray_blob_frame(cx=cx),
+                i * 0.1,
+                None,
+                prev_to_cur=ident,
+                scene_motion=True,
+                ref_lag=3,
+            )
         assert state.smoke is None  # ref(0.6) and cur(0.9) both at 60: no span motion
 
     def test_blob_moved_across_window_is_detected(self):
@@ -210,12 +216,17 @@ class TestWindowedReferenceAndTexture:
         # works where k=1 fragments at ~1-2 px/frame drift).
         ident = np.float32([[1, 0, 0], [0, 1, 0]])
         positions = [60] * 8 + [100, 100]
-        sit = SituationAnalyzer(hold_s=0.0, min_area=0.004,
-                                smoke_window_s=0.32, smoke_texture_min=0.0)
+        sit = SituationAnalyzer(hold_s=0.0, min_area=0.004, smoke_window_s=0.32, smoke_texture_min=0.0)
         state = None
         for i, cx in enumerate(positions):
-            state = sit.update(_textured_gray_blob_frame(cx=cx), i * 0.1, None,
-                               prev_to_cur=ident, scene_motion=True, ref_lag=3)
+            state = sit.update(
+                _textured_gray_blob_frame(cx=cx),
+                i * 0.1,
+                None,
+                prev_to_cur=ident,
+                scene_motion=True,
+                ref_lag=3,
+            )
         assert state.smoke is not None
 
     def test_smooth_blob_rejected_by_texture_gate(self):
@@ -225,8 +236,14 @@ class TestWindowedReferenceAndTexture:
         sit = SituationAnalyzer(hold_s=0.0, min_area=0.004, smoke_texture_min=12.0)
         state = None
         for i in range(10):
-            state = sit.update(_textured_gray_blob_frame(cx=60 + 4 * i, smooth=True),
-                               i * 0.1, None, prev_to_cur=ident, scene_motion=True, ref_lag=3)
+            state = sit.update(
+                _textured_gray_blob_frame(cx=60 + 4 * i, smooth=True),
+                i * 0.1,
+                None,
+                prev_to_cur=ident,
+                scene_motion=True,
+                ref_lag=3,
+            )
         assert state.smoke is None
 
     def test_textured_blob_passes_texture_gate(self):
@@ -235,8 +252,14 @@ class TestWindowedReferenceAndTexture:
         sit = SituationAnalyzer(hold_s=0.0, min_area=0.004, smoke_texture_min=12.0)
         state = None
         for i in range(10):
-            state = sit.update(_textured_gray_blob_frame(cx=60 + 4 * i, rng=rng),
-                               i * 0.1, None, prev_to_cur=ident, scene_motion=True, ref_lag=3)
+            state = sit.update(
+                _textured_gray_blob_frame(cx=60 + 4 * i, rng=rng),
+                i * 0.1,
+                None,
+                prev_to_cur=ident,
+                scene_motion=True,
+                ref_lag=3,
+            )
         assert state.smoke is not None
 
     def test_texture_gate_not_applied_on_legacy_path(self):

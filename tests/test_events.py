@@ -516,8 +516,13 @@ class TestSceneCompensatedSmoke:
 
         small = [cv2.resize(f, (160, 90)) for f in frames]
         legacy_px = sum(
-            int(smoke_mask(small[i], cv2.cvtColor(small[i - 1], cv2.COLOR_BGR2GRAY),
-                           cv2.cvtColor(small[i], cv2.COLOR_BGR2GRAY)).sum())
+            int(
+                smoke_mask(
+                    small[i],
+                    cv2.cvtColor(small[i - 1], cv2.COLOR_BGR2GRAY),
+                    cv2.cvtColor(small[i], cv2.COLOR_BGR2GRAY),
+                ).sum()
+            )
             for i in range(1, len(small))
         )
         assert legacy_px > 1000  # legacy fires without compensation

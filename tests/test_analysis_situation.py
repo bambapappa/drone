@@ -162,3 +162,88 @@ class TestSceneCompensatedSmoke:
         # No honest motion signal this frame: smoke None — never guess across a
         # visual loss (B29 loss rule), hold() rides over single frames.
         assert s1.smoke is None
+
+
+def _textured_gray_blob_frame(w=160, h=90, cx=60, cy=45, r=9, rng=None, smooth=False):
+    """Green background with a gray blob at (cx, cy).
+
+    `smooth=True`: flat interior (median |Laplacian| ~0). Otherwise: per-pixel
+    noise inside the blob — turbulent internal structure, the way real smoke
+    reads at WORK_W resolution (measured: fire-half blobs 16–68, traffic 3–7).
+    """
+    img = np.full((h, w, 3), (40, 120, 60), np.uint8)
+    if smooth:
+        cv2.circle(img, (cx, cy), r, (110, 115, 112), -1)
+    else:
+        if rng is None:
+            rng = np.random.default_rng(0)
+        noise = rng.integers(80, 190, size=(2 * r + 1, 2 * r + 1)).astype(np.uint8)
+        region = img[cy - r : cy + r + 1, cx - r : cx + r + 1]
+        mask = np.zeros(region.shape[:2], np.uint8)
+        cv2.circle(mask, (r, r), r, 255, -1)
+        gray3 = cv2.cvtColor(noise, cv2.COLOR_GRAY2BGR)
+        region[mask > 0] = gray3[mask > 0]
+    return img
+
+
+class TestWindowedReferenceAndTexture:
+    """B32: 0.32 s windowed reference + in-blob texture gate (scene path only)."""
+
+    def test_reference_is_window_back_not_previous_frame(self):
+        # 10 fps, smoke_window_s=0.32 => the scene-path reference is ~3 frames
+        # back, not the previous frame. A blob that makes a single-frame
+        # excursion (moves between n-2 and n-1, back at n) is INVISIBLE over
+        # the 3-frame span even though the consecutive diff would see it.
+        ident = np.float32([[1, 0, 0], [0, 1, 0]])
+        positions = [60] * 8 + [100, 60]  # single-frame excursion at n-1
+        sit = SituationAnalyzer(hold_s=0.0, min_area=0.004,
+                                smoke_window_s=0.32, smoke_texture_min=0.0)
+        state = None
+        for i, cx in enumerate(positions):
+            state = sit.update(_textured_gray_blob_frame(cx=cx), i * 0.1, None,
+                               prev_to_cur=ident, scene_motion=True, ref_lag=3)
+        assert state.smoke is None  # ref(0.6) and cur(0.9) both at 60: no span motion
+
+    def test_blob_moved_across_window_is_detected(self):
+        # Same setup, but the blob STAYS at its new position: over the 3-frame
+        # span it has moved 40 px — detected (this is the measured reason k=8
+        # works where k=1 fragments at ~1-2 px/frame drift).
+        ident = np.float32([[1, 0, 0], [0, 1, 0]])
+        positions = [60] * 8 + [100, 100]
+        sit = SituationAnalyzer(hold_s=0.0, min_area=0.004,
+                                smoke_window_s=0.32, smoke_texture_min=0.0)
+        state = None
+        for i, cx in enumerate(positions):
+            state = sit.update(_textured_gray_blob_frame(cx=cx), i * 0.1, None,
+                               prev_to_cur=ident, scene_motion=True, ref_lag=3)
+        assert state.smoke is not None
+
+    def test_smooth_blob_rejected_by_texture_gate(self):
+        # Same gray motion, flat interior: gray traffic/warp residue, not
+        # smoke — the blob is gated exactly like fire_require_smoke gates fire.
+        ident = np.float32([[1, 0, 0], [0, 1, 0]])
+        sit = SituationAnalyzer(hold_s=0.0, min_area=0.004, smoke_texture_min=12.0)
+        state = None
+        for i in range(10):
+            state = sit.update(_textured_gray_blob_frame(cx=60 + 4 * i, smooth=True),
+                               i * 0.1, None, prev_to_cur=ident, scene_motion=True, ref_lag=3)
+        assert state.smoke is None
+
+    def test_textured_blob_passes_texture_gate(self):
+        ident = np.float32([[1, 0, 0], [0, 1, 0]])
+        rng = np.random.default_rng(7)
+        sit = SituationAnalyzer(hold_s=0.0, min_area=0.004, smoke_texture_min=12.0)
+        state = None
+        for i in range(10):
+            state = sit.update(_textured_gray_blob_frame(cx=60 + 4 * i, rng=rng),
+                               i * 0.1, None, prev_to_cur=ident, scene_motion=True, ref_lag=3)
+        assert state.smoke is not None
+
+    def test_texture_gate_not_applied_on_legacy_path(self):
+        # scene_motion=False must stay bit-identical to today: a smooth gray
+        # moving blob IS legacy smoke (that behavior is pinned elsewhere).
+        sit = SituationAnalyzer(hold_s=0.0, min_area=0.004, smoke_texture_min=12.0)
+        state = None
+        for i in range(10):
+            state = sit.update(_textured_gray_blob_frame(cx=60 + 8 * i, smooth=True), i * 0.1, None)
+        assert state.smoke is not None

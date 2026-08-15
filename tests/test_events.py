@@ -525,6 +525,47 @@ class TestSceneCompensatedSmoke:
         events = derive_events([], scene_frames=scene_frames, **common)
         assert not any(e.category == CATEGORY_HAZARD for e in events)
 
+    def test_prev_to_cur_spans_k_frames(self):
+        # B32: the warp composite must span the smoke window (k frames), not
+        # the previous frame. Camera pans +8 px/frame; a scene-static gray
+        # blob sits at scene x=40. With a k-span composite (k = max(2,
+        # round(0.32*10)) = 3) the reference is frame n-3 and its warp is a
+        # +24 px translation, which lands the reference blob exactly on the
+        # current one => no smoke. The asserts pin BOTH that derive_events
+        # uses the n-k transform (a consecutive composite would misalign by
+        # 16 px and fire) and that scene_motion is on.
+        frames = []
+        for i in range(30):
+            img = np.full((90, 160, 3), (40, 120, 60), np.uint8)
+            cv2.circle(img, (40 + 8 * i, 45), 6, (110, 115, 112), -1)
+            frames.append(img)
+        scene_frames = self._scene_frames(30)  # s2f = +8*i  (same segment)
+        cfg = _sit_config()  # hazard_texture_min=0 there: this test pins span, not texture
+        cfg.hazard_min_area = 0.001
+        cfg.hazard_hold_s = 0.1
+        events = derive_events(
+            [],
+            person_by_tracklet={},
+            frames=frames,
+            fps=self.FPS,
+            frame_w=160,
+            frame_h=90,
+            config=cfg,
+            ignore_regions=None,
+            scene_frames=scene_frames,
+        )
+        assert not any(e.category == CATEGORY_HAZARD for e in events)
+
+
+def test_offline_config_carries_smoke_window_and_texture():
+    # B26 lesson: a new OfflineConfig field that misses to_dict() silently
+    # breaks provenance/config-hash when a run is recomputed from its manifest.
+    from analysis.orchestrator import OfflineConfig
+
+    d = OfflineConfig().to_dict()
+    assert d["hazard_smoke_window_s"] == 0.32
+    assert d["hazard_texture_min"] == 12.0
+
 
 # ---- helpers ----
 
@@ -548,9 +589,12 @@ def _sit_config():
     from analysis.orchestrator import OfflineConfig
 
     # Smaller hold_s so 40-frame synthetic runs can produce a sustained event.
+    # hazard_texture_min=0: these fixtures use flat synthetic blobs — the
+    # texture gate has its own dedicated tests; here it must not interfere.
     return OfflineConfig(
         hazard_min_area=0.004,
         hazard_hold_s=1.0,
+        hazard_texture_min=0.0,
         smoke_flow_ema=0.15,
         base_margin=0.08,
         base_hysteresis=0.15,

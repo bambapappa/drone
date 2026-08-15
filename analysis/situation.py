@@ -67,6 +67,20 @@ def smoke_mask(
     return m
 
 
+def _blob_texture(gray: np.ndarray, mask: np.ndarray) -> float | None:
+    """Median |Laplacian| inside the largest blob of `mask` — turbulent
+    internal structure. Measured on the real film (DECISIONS B32): smoke-half
+    blobs 16–68, no-smoke (gray traffic / warp residue) 3–7; threshold 12 sits
+    between. Pure image-plane measurement, so GMC drift cannot break it (scene-
+    coordinate discriminators were measured to fail)."""
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    if n <= 1:
+        return None
+    i = int(np.argmax(stats[1:, cv2.CC_STAT_AREA])) + 1
+    lap = np.abs(cv2.Laplacian(gray, cv2.CV_32F))
+    return float(np.median(lap[labels == i]))
+
+
 def _largest_blob(mask: np.ndarray) -> tuple[tuple[float, float], float] | None:
     """((cx, cy) normalized, area fraction) of the largest connected component."""
     n, labels, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
@@ -138,6 +152,8 @@ class SituationAnalyzer:
         fire_require_smoke: bool = True,
         fire_smoke_radius: float = 0.28,
         fire_smoke_min_frac: float = 0.02,
+        smoke_window_s: float = 0.32,
+        smoke_texture_min: float = 12.0,
     ):
         self.min_area = min_area
         self.hold_s = hold_s
@@ -149,8 +165,22 @@ class SituationAnalyzer:
         self.fire_require_smoke = fire_require_smoke
         self.fire_smoke_radius = fire_smoke_radius
         self.fire_smoke_min_frac = fire_smoke_min_frac
+        # Smoke motion baseline in seconds (B32): real smoke drifts ~1-2 px/
+        # frame at WORK_W — a k=1 frame diff fragments below the absdiff>6
+        # threshold. Measured: k=4 (0.16 s) still insufficient, k=8 (0.32 s)
+        # sufficient; 0.32 s chosen. Documented measured default — only
+        # change it with a new measurement.
+        self.smoke_window_s = smoke_window_s
+        # Median |Laplacian| inside the blob for it to count as smoke (B32):
+        # turbulent internal structure, not a flat gray vehicle/warp residue.
+        # Measured separation: no-smoke 3-7, smoke 16-68; 12 sits between.
+        # Image-plane measurement — insensitive to GMC drift (scene-coordinate
+        # discriminators are forbidden by B32, they were measured to break).
+        # Documented measured default — only change it with a new measurement.
+        self.smoke_texture_min = smoke_texture_min
         self.state = SituationState()
         self._prev_gray: np.ndarray | None = None
+        self._gray_buf: list[tuple[float, np.ndarray]] = []
         self._fire_since: float | None = None
         self._smoke_since: float | None = None
         self._drift = np.zeros(2)
@@ -164,6 +194,7 @@ class SituationAnalyzer:
         ignore: list[tuple[float, float, float, float]] | None = None,
         prev_to_cur: np.ndarray | None = None,
         scene_motion: bool = False,
+        ref_lag: int = 1,
     ) -> SituationState:
         h, w = frame_bgr.shape[:2]
         small = cv2.resize(frame_bgr, (WORK_W, max(2, int(h * WORK_W / w))))
@@ -175,23 +206,48 @@ class SituationAnalyzer:
                 small[int(ry * sh) : int((ry + rh) * sh), int(rx * sw) : int((rx + rw) * sw)] = 0
         gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
 
+        # Windowed gray buffer (always, both modes — cheap at WORK_W): the
+        # scene-path reference is the frame ~smoke_window_s back, since k=1
+        # fragments real smoke drift (B32). Pruned to the window while always
+        # keeping one older frame (the deepest reference) and at least two.
+        self._gray_buf.append((t, gray))
+        cutoff = t - self.smoke_window_s
+        idx = 0
+        while idx < len(self._gray_buf) and self._gray_buf[idx][0] < cutoff:
+            idx += 1
+        start = max(0, idx - 1)
+        if len(self._gray_buf) - start < 2:
+            start = max(0, len(self._gray_buf) - 2)
+        self._gray_buf = self._gray_buf[start:]
+
         fm = fire_mask(small)
         if scene_motion:
-            if self._prev_gray is None or prev_to_cur is None:
-                # Unlinked pair (scene loss / segment break / missing transform):
-                # no honest motion signal this frame — never guess across a
-                # visual loss (B29 loss rule). hold() rides over single frames.
+            ref = self._gray_buf[-(ref_lag + 1)][1] if len(self._gray_buf) > ref_lag else None
+            if ref is None or ref.shape != gray.shape or prev_to_cur is None:
+                # Unlinked pair (scene loss / segment break / missing transform)
+                # or a buffer too short for the requested lag: no honest motion
+                # signal this frame — never guess across a visual loss (B29 loss
+                # rule). hold() rides over single frames.
                 sm = np.zeros_like(gray)
             else:
-                sm = smoke_mask(small, self._prev_gray, gray, prev_to_cur=prev_to_cur)
+                sm = smoke_mask(small, ref, gray, prev_to_cur=prev_to_cur)
         else:
+            # Legacy path: previous frame, exactly today's behaviour.
             sm = smoke_mask(small, self._prev_gray, gray)
 
         fire_blob = _largest_blob(fm)
         if fire_blob is not None and self.fire_require_smoke and not self._smoke_near(sm, fire_blob[0]):
             fire_blob = None  # red roofs / sunset etc. — saturated colour but no smoke
         self.state.fire = self._hold("fire", fire_blob, t, self.state.fire, "_fire_since")
-        self.state.smoke = self._hold("smoke", _largest_blob(sm), t, self.state.smoke, "_smoke_since")
+        smoke_blob = _largest_blob(sm)
+        if scene_motion and smoke_blob is not None:
+            texture = _blob_texture(gray, sm)
+            if texture is None or texture < self.smoke_texture_min:
+                # Flat gray blob: traffic/warp residue, not turbulent smoke.
+                # Same gating pattern as fire_require_smoke. Scene path only —
+                # the legacy path stays bit-identical.
+                smoke_blob = None
+        self.state.smoke = self._hold("smoke", smoke_blob, t, self.state.smoke, "_smoke_since")
 
         # Smoke drift: median Farneback flow inside the smoke mask, EMA-smoothed.
         if self._prev_gray is not None and self._prev_gray.shape == gray.shape and sm.sum() > 20:

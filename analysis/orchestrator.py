@@ -169,6 +169,12 @@ class OfflineConfig:
     hazard_min_area: float = 0.004
     hazard_hold_s: float = 2.0
     smoke_flow_ema: float = 0.15
+    # B32: smoke motion baseline (s) — the warp-diff reference is this far
+    # back, not the previous frame (measured: k=1 fragments real smoke).
+    # In-blob texture gate: median |Laplacian| below this is gray traffic /
+    # warp residue, not turbulent smoke (measured separation 3-7 vs 16-68).
+    hazard_smoke_window_s: float = 0.32
+    hazard_texture_min: float = 12.0
     base_margin: float = 0.08
     base_hysteresis: float = 0.15
     fire_require_smoke: bool = True
@@ -246,6 +252,10 @@ class OfflineConfig:
             "irr_weight_freeze_bolt": self.irr_weight_freeze_bolt,
             "irr_score_threshold": self.irr_score_threshold,
             "irr_sustain_s": self.irr_sustain_s,
+            # B32 smoke-scene fix (B26 lesson: new fields MUST reach to_dict or
+            # a manifest-recomputed run silently uses different thresholds).
+            "hazard_smoke_window_s": self.hazard_smoke_window_s,
+            "hazard_texture_min": self.hazard_texture_min,
         }
 
 

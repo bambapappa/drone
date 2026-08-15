@@ -413,6 +413,8 @@ def derive_hazard_events(
         base_margin=config.base_margin,
         base_hysteresis=config.base_hysteresis,
         fire_require_smoke=config.fire_require_smoke,
+        smoke_window_s=config.hazard_smoke_window_s,
+        smoke_texture_min=config.hazard_texture_min,
     )
 
     # Per-kind timeline: fire / smoke presence per frame, plus area for
@@ -590,7 +592,14 @@ def derive_events(
         base_margin=config.base_margin,
         base_hysteresis=config.base_hysteresis,
         fire_require_smoke=config.fire_require_smoke,
+        smoke_window_s=config.hazard_smoke_window_s,
+        smoke_texture_min=config.hazard_texture_min,
     )
+
+    # B32: the smoke reference spans the smoke window, not one frame —
+    # real smoke drifts ~1-2 px/frame and a k=1 diff fragments below the
+    # absdiff threshold. Minimum span is 2 frames.
+    k = max(2, round(config.hazard_smoke_window_s * fps))
 
     # Per-frame danger point in pixels (or None). Also the input for the
     # hazard diff, computed as a by-product so we only walk the frame stream
@@ -600,7 +609,7 @@ def derive_events(
     danger_px_by_frame: dict[int, tuple[float, float] | None] = {}
 
     frame_no = 0
-    prev_scene_rec: dict[str, Any] | None = None
+    scene_hist: dict[int, dict[str, Any]] = {}  # last k+1 scene records
     # The smoke diff runs on the analyzer's downscaled frame (WORK_W wide),
     # so the prev→cur affine — in full-resolution frame pixels — is scaled to
     # that space before it reaches cv2.warpAffine.
@@ -609,16 +618,20 @@ def derive_events(
         t = frame_no / fps
         scene_rec = (scene_frames or {}).get(frame_no)
         prev_to_cur = None
+        ref_rec = scene_hist.get(frame_no - k)
         if (
             scene_rec is not None
             and scene_rec.get("frame_to_scene") is not None
             and scene_rec.get("scene_to_frame") is not None
-            and prev_scene_rec is not None
-            and prev_scene_rec.get("frame_to_scene") is not None
-            and int(scene_rec.get("scene_segment", -1)) == int(prev_scene_rec.get("scene_segment", -2))
+            and ref_rec is not None
+            and ref_rec.get("frame_to_scene") is not None
+            and int(scene_rec.get("scene_segment", -1)) == int(ref_rec.get("scene_segment", -2))
         ):
+            # Composite over the k-frame span: scene_to_frame(n) @
+            # frame_to_scene(n-k) — only the translation column scales under
+            # S·A·S⁻¹ (pattern pinned by test_rotation_scaling...).
             rel = np.asarray(scene_rec["scene_to_frame"], dtype=np.float32) @ np.asarray(
-                prev_scene_rec["frame_to_scene"], dtype=np.float32
+                ref_rec["frame_to_scene"], dtype=np.float32
             )
             rel23 = np.asarray(rel, dtype=np.float32)[:2, :3]
             # S·A·S⁻¹ for uniform scale s = warp_scale: translation scales by
@@ -627,9 +640,17 @@ def derive_events(
             rel23[:, 2] *= warp_scale
             prev_to_cur = rel23
         state = sit.update(
-            frame, t, danger_norm=None, ignore=ignore_regions, prev_to_cur=prev_to_cur, scene_motion=True
+            frame,
+            t,
+            danger_norm=None,
+            ignore=ignore_regions,
+            prev_to_cur=prev_to_cur,
+            scene_motion=True,
+            ref_lag=k,
         )
-        prev_scene_rec = scene_rec
+        if scene_rec is not None:
+            scene_hist[frame_no] = scene_rec
+            scene_hist.pop(frame_no - k, None)
         if state.fire is not None:
             fire_timeline.append((frame_no, True, state.fire.area))
             danger_px_by_frame[frame_no] = (state.fire.pos[0] * frame_w, state.fire.pos[1] * frame_h)

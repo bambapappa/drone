@@ -126,6 +126,7 @@ const canvas = $("#overlay");
 const ctx = canvas.getContext("2d");
 const overlayMsg = $("#overlay-msg");
 const frameInfo = $("#frame-info");
+const stage = $("#stage");
 
 // ---------- small utilities ----------
 function toast(msg, kind = "info") {
@@ -205,6 +206,7 @@ async function loadRun(rid) {
     video.addEventListener("loadeddata", () => {
       overlayMsg.classList.add("hidden");
       syncCanvasSize();
+      syncMediaSize();
     }, { once: true });
     video.addEventListener("loadedmetadata", () => renderTimeline(), { once: true });
     video.addEventListener("error", () => {
@@ -303,6 +305,25 @@ function syncCanvasSize() {
   if (canvas.height !== video.videoHeight) canvas.height = video.videoHeight;
 }
 
+function syncMediaSize() {
+  // Keep the video and canvas as one aspect-correct media surface.  Without
+  // explicit dimensions Safari uses the replaced element's 300×150 default,
+  // making a perfectly valid 16:9 film look like a thumbnail.
+  if (!video.videoWidth || !video.videoHeight || !stage) return;
+  const rect = stage.getBoundingClientRect();
+  const scale = Math.min(rect.width / video.videoWidth, rect.height / video.videoHeight);
+  if (!Number.isFinite(scale) || scale <= 0) return;
+  const width = Math.round(video.videoWidth * scale);
+  const height = Math.round(video.videoHeight * scale);
+  video.style.width = `${width}px`;
+  video.style.height = `${height}px`;
+  canvas.style.width = `${width}px`;
+  canvas.style.height = `${height}px`;
+  canvas.style.left = "50%";
+  canvas.style.top = "50%";
+  canvas.style.transform = "translate(-50%, -50%)";
+}
+
 function currentFrameRecord() {
   // Map video.currentTime (media seconds) → nearest frame_no using the PTS
   // index. pts_ms values come from the ingest decode pass and are the
@@ -377,6 +398,7 @@ async function drawOverlay() {
   }
   if (!video.readyState || video.readyState < 2) return;
   syncCanvasSize();
+  syncMediaSize();
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
   await ensureFramesWindow(video.currentTime * 1000);
@@ -384,6 +406,7 @@ async function drawOverlay() {
   const frameNo = frameRecord?.frame_no ?? null;
   if (frameNo == null) { frameInfo.classList.add("hidden"); return; }
   if (state.layers.heatmap) drawHeatmapLayer(canvas.width, canvas.height, frameRecord);
+  drawBrandTargets(canvas.width, canvas.height, frameRecord);
   drawHazardMarker(canvas.width, canvas.height, frameRecord);
   if (frameNo !== lastDrawnFrame) {
     frameInfo.textContent = `ruta ${frameNo}`;
@@ -588,6 +611,48 @@ function drawHazardMarker(W, H, frameRecord) {
   ctx.textBaseline = "bottom";
   ctx.fillStyle = COLORS.toward_danger;
   ctx.fillText(position.state === "offscreen" ? "FARA UTANFÖR BILD" : "FAROMARKÖR", x + r + 4, y + r);
+}
+
+function drawBrandTargets(W, H, frameRecord) {
+  // Engine-derived BRAND targets are distinct from the optional manual
+  // faromarkör.  The event evidence stores the anchor in the local scene
+  // coordinate system; project it into the current frame when the segment is
+  // still valid.  Old sidecars without an anchor simply have no target here.
+  if (!frameRecord?.scene_to_frame) return;
+  const frameNo = frameRecord.frame_no;
+  const targets = state.events.filter((event) => {
+    if (event.category !== "HAZARD") return false;
+    const evidence = event.evidence || {};
+    if (evidence.kind !== "brand" || !Array.isArray(evidence.anchor)) return false;
+    if (evidence.scene_segment != null && evidence.scene_segment !== frameRecord.scene_segment) return false;
+    return frameNo >= (evidence.frame_start ?? 0) && frameNo <= (evidence.frame_end ?? Number.MAX_SAFE_INTEGER);
+  });
+  for (const event of targets) {
+    const evidence = event.evidence;
+    const point = projectPoint(frameRecord.scene_to_frame, evidence.anchor[0], evidence.anchor[1]);
+    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) continue;
+    const x = Math.max(12, Math.min(W - 12, point.x));
+    const y = Math.max(12, Math.min(H - 12, point.y));
+    const offscreen = x !== point.x || y !== point.y;
+    const r = Math.max(10, W / 70);
+    ctx.save();
+    ctx.strokeStyle = COLORS.fire;
+    ctx.fillStyle = "rgba(255,107,53,.18)";
+    ctx.lineWidth = Math.max(3, W / 360);
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x - r - 7, y); ctx.lineTo(x + r + 7, y);
+    ctx.moveTo(x, y - r - 7); ctx.lineTo(x, y + r + 7);
+    ctx.stroke();
+    ctx.font = `bold ${Math.max(13, W / 62)}px system-ui, sans-serif`;
+    ctx.textBaseline = "bottom";
+    ctx.fillStyle = COLORS.fire;
+    ctx.fillText(offscreen ? "BRAND · UTANFÖR BILD" : "BRAND · RÖK/ELD", x + r + 7, y - 4);
+    ctx.restore();
+  }
 }
 
 // =====================================================================
@@ -2147,6 +2212,7 @@ function updateStats() {
 
 refreshRuns().catch(() => toast("Kunde inte hämta körningar", "error"));
 refreshFeatures(); // Phase 5 toggle state → hide disabled tabs/chips/buttons
+window.addEventListener("resize", syncMediaSize);
 // Start the overlay loop — it self-schedules via requestVideoFrameCallback
 // (or rAF fallback) and no-ops until a run is loaded.
 drawOverlay();

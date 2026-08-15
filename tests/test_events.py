@@ -317,7 +317,7 @@ class TestHazardEventDiff:
         events = derive_hazard_events(frames, fps=10.0, config=_sit_config())
         assert len(events) == 0
 
-    def test_two_fire_sites_become_two_persistent_brand_events(self):
+    def test_secondary_unvalidated_fire_blob_is_not_promoted(self):
         frames = []
         for _ in range(20):
             frame = np.zeros((180, 320, 3), dtype=np.uint8)
@@ -330,12 +330,9 @@ class TestHazardEventDiff:
 
         events = derive_hazard_events(frames, fps=10.0, config=config)
 
-        assert len(events) == 2
+        assert len(events) == 1
         assert {event.evidence["kind"] for event in events} == {"brand"}
-        assert {event.evidence["brand_id"] for event in events} == {
-            "brand-000000",
-            "brand-000001",
-        }
+        assert {event.evidence["brand_id"] for event in events} == {"brand-000000"}
         assert all(event.evidence["signals"] == ["fire"] for event in events)
         assert all(event.t_end == 2.0 for event in events)
 

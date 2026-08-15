@@ -73,7 +73,7 @@ def test_no_fire_on_neutral_frame():
     assert state.fire is None
 
 
-def test_multiple_fire_blobs_are_exposed_as_separate_brand_signals():
+def test_unvalidated_secondary_fire_blobs_are_not_promoted():
     frame = np.zeros((180, 320, 3), dtype=np.uint8)
     frame[40:80, 30:80] = (20, 60, 230)
     frame[100:150, 240:300] = (20, 60, 230)
@@ -81,9 +81,8 @@ def test_multiple_fire_blobs_are_exposed_as_separate_brand_signals():
 
     state = analyzer.update(frame, 0.0, None)
 
-    assert len(state.fire_hazards) == 2
+    assert len(state.fire_hazards) == 1
     assert state.fire == state.fire_hazards[0]
-    assert state.fire_hazards[0].pos != state.fire_hazards[1].pos
 
 
 def test_hold_grace_is_not_reported_as_a_fresh_observation():

@@ -34,7 +34,7 @@ def test_spatially_separate_observations_remain_separate_brands():
     tracker.observe(
         [
             obs(10, 100.0, 100.0),
-            obs(10, 300.0, 300.0, signal="fire"),
+            obs(10, 300.0, 300.0),
         ]
     )
 
@@ -86,3 +86,22 @@ def test_fire_and_smoke_in_same_frame_count_as_one_observed_frame():
     incident = tracker.incidents(end_frame=99, fps=10.0)[0]
     assert incident.observation_count == 2
     assert incident.observed_frame_count == 1
+
+
+def test_single_signal_jump_updates_existing_site_instead_of_inventing_another():
+    tracker = BrandIncidentTracker(association_radius=20.0)
+    tracker.observe([obs(10, 100.0, 100.0)])
+
+    tracker.observe([obs(20, 400.0, 400.0)])
+
+    incidents = tracker.incidents(end_frame=99, fps=10.0)
+    assert len(incidents) == 1
+    assert incidents[0].observation_count == 2
+
+
+def test_second_site_requires_simultaneous_same_signal_evidence():
+    tracker = BrandIncidentTracker(association_radius=20.0)
+    tracker.observe([obs(10, 100.0, 100.0), obs(10, 400.0, 400.0)])
+
+    incidents = tracker.incidents(end_frame=99, fps=10.0)
+    assert len(incidents) == 2

@@ -181,7 +181,11 @@ incident).
   end of the film. MOT_FARA is evaluated against all targets and records the
   matching `brand_id`. Incidents are never auto-merged across an unlinked
   segment; local maps on either side are unrelated. Phase 4's human marker is
-  still a deliberate single-point override — see below.
+  still a deliberate single-point override. The current transparent
+  SituationAnalyzer contributes at most its strongest fire and strongest
+  smoke component per frame; the collection-based incident contract supports
+  several established sites, but secondary simultaneous blob recall is not
+  claimed without a measured precision-safe detector — see B33.
 - **Determinism.** P5 drives the analyzers in fixed (frame_no, tracklet_id)
   order with no RNG — two runs over the same P1+P2(+P3) output produce
   byte-identical events, mirroring the P1/P2/P3 guarantee.

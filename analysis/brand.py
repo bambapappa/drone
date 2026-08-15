@@ -90,11 +90,11 @@ class BrandIncidentTracker:
         """Associate every observation with at most one incident.
 
         Greedy nearest-neighbour assignment is deterministic because both
-        observations and incidents have stable sort keys.  An incident can
-        consume at most one observation per frame, which prevents two nearby
-        simultaneous same-signal fire sites from collapsing into one.  One
-        fire and one smoke observation may update the same incident in a
-        frame because they are two sensors for the same operational BRAND.
+        observations and incidents have stable sort keys. An incident can
+        consume at most one observation of each signal per frame, which makes
+        simultaneous same-signal observations the honest evidence for a
+        second site. One fire and one smoke observation may update the same
+        incident because they are two sensors for the same operational BRAND.
         """
         claimed: set[tuple[str, str]] = set()
         ordered = sorted(
@@ -121,14 +121,32 @@ class BrandIncidentTracker:
             if candidates:
                 _, _, incident = min(candidates, key=lambda item: (item[0], item[1]))
             else:
-                incident = _MutableIncident(
-                    brand_id=f"brand-{len(self._incidents):06d}",
-                    scene_segment=observation.scene_segment,
-                    anchor=observation.pos,
-                    frame_start=observation.frame_no,
-                    last_observed_frame=observation.frame_no,
-                )
-                self._incidents.append(incident)
+                # A single strongest signal jumping in the frame is not proof
+                # of a second physical site (the circling-drone film measured
+                # large centroid/GMC drift). Keep the established incident.
+                # A new site requires simultaneous same-signal evidence: the
+                # existing incident has already consumed that signal this
+                # frame, so it is absent from fallbacks and a new id is made.
+                fallbacks = [
+                    incident
+                    for incident in self._incidents
+                    if incident.scene_segment == observation.scene_segment
+                    and (incident.brand_id, observation.signal) not in claimed
+                ]
+                if fallbacks:
+                    incident = min(
+                        fallbacks,
+                        key=lambda item: (math.dist(item.anchor, observation.pos), item.brand_id),
+                    )
+                else:
+                    incident = _MutableIncident(
+                        brand_id=f"brand-{len(self._incidents):06d}",
+                        scene_segment=observation.scene_segment,
+                        anchor=observation.pos,
+                        frame_start=observation.frame_no,
+                        last_observed_frame=observation.frame_no,
+                    )
+                    self._incidents.append(incident)
             incident.update(observation)
             claimed.add((incident.brand_id, observation.signal))
 

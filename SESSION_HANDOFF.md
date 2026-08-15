@@ -1,5 +1,14 @@
 # Session handoff
 
+## 2026-08-15 — Superpowers Task 3
+
+- **Status:** `DONE_WITH_CONCERNS`. Branch `fix/smoke-scene-compensated-motion`, utgångs-SHA `c82d07f` (Task 3 är en ren dokumentationscommit ovanpå denna SHA; ingen kod eller tröskel ändrades).
+- **Brandhalva, använd körning:** `drone-halva2-brand_analysis/eb365b175b07`. Manifest: P1–P5 `complete`, 3 706 bildrutor; P5 23 events = HAZARD 8 (3 smoke, 5 fire), MOT_FARA 11, IRRATIONELL 4. Rökspann: 13,20–19,36, 24,80–30,84 och 137,40–143,40 s. Alla fem fire är öppna falsklarm eftersom filmen har rök men inga lågor. Den ofullständiga brandkörningen `4cee3cfea615` ska fortsatt ignoreras.
+- **Olyckshalva, ny körning:** `drone-halva1-olycka_analysis/fd10f349f3d7`, skapad utan `--resume` med VisDrone-s/MPS, 1280 och display-conf 0,20. Kommando exit 0; manifest P1–P5 `complete`, 3 705 bildrutor; P5 20 events = IRRATIONELL 12, STILLA 8, HAZARD 0, MOT_FARA 0. Negativkontrollen har alltså 0 smoke och 0 fire.
+- **Slutsats:** A′+textur detekterar verklig rök i separat brandfilm och förblir tyst för rök i separat olycksfilm; smoke-position och drift är mätt icke-triviala. MOT_FARA-kedjan ger 11/0 som bonus. Precisionen är inte grön eftersom brandhalvan samtidigt ger fem fire-falsklarm.
+- **Öppna concerns:** filmglobal PiP-mask övermaskerar sammanklippt film, därför är split-halvor det ärliga testet för en-film-per-körning. `OfflineConfig.to_dict()` saknar `ignore_regions` och övriga hazard-fält; manifestet kan inte bära full körproveniens. `smoke_drift` använder fortfarande owarpad föregående bildruta. Fire-falsklarmen är kvar.
+- **Återstår — Task 4:** stryk den nu inaktuella anspråksraden i `HANDOFF.md` och gör Task 4:s slutverifiering. `HANDOFF.md` är avsiktligt orörd i Task 3.
+
 ## 2026-08-10
 
 - Review phase fixed the person statistic so the Swedish header keeps `unique_count` as its headline while showing the API's projected `count` with P3's immutable uncertainty band.

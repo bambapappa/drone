@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import math
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 STATUS_OK = "ok"
@@ -41,6 +42,7 @@ class _State:
     hist: deque = field(default_factory=lambda: deque(maxlen=512))
     still_since: float | None = None
     toward_since: float | None = None
+    toward_danger_id: str | None = None
     status: str = STATUS_OK
     prone: bool = False
     speed: float = 0.0
@@ -58,7 +60,7 @@ class BehaviorAnalyzer:
         stab_pos: tuple[float, float],
         box_h: float,
         aspect: float,
-        danger_stab: tuple[float, float] | None,
+        danger_stab: tuple[float, float] | Mapping[str, tuple[float, float]] | None,
     ) -> tuple[str, bool, float]:
         """Feed one observation; returns (status, prone, norm_speed)."""
         st = self._states.setdefault(pid, _State())
@@ -83,18 +85,29 @@ class BehaviorAnalyzer:
 
         # --- toward danger ---
         toward = False
+        matched_danger_id: str | None = None
         if danger_stab is not None and speed > self.cfg.toward_speed and direction is not None:
             last = st.hist[-1]
-            dx, dy = danger_stab[0] - last[1], danger_stab[1] - last[2]
-            dist = math.hypot(dx, dy)
-            if dist > 1.0:
+            targets = danger_stab.items() if isinstance(danger_stab, Mapping) else ((None, danger_stab),)
+            aligned = []
+            for danger_id, danger_pos in targets:
+                dx, dy = danger_pos[0] - last[1], danger_pos[1] - last[2]
+                dist = math.hypot(dx, dy)
+                if dist <= 1.0:
+                    continue
                 cos_a = (direction[0] * dx + direction[1] * dy) / dist
-                toward = cos_a > math.cos(math.radians(self.cfg.toward_angle_deg))
+                if cos_a > math.cos(math.radians(self.cfg.toward_angle_deg)):
+                    aligned.append((cos_a, "" if danger_id is None else danger_id, danger_id))
+            if aligned:
+                _, _, matched_danger_id = min(aligned, key=lambda item: (-item[0], item[1]))
+                toward = True
         if toward:
-            if st.toward_since is None:
+            if st.toward_since is None or st.toward_danger_id != matched_danger_id:
                 st.toward_since = t
+            st.toward_danger_id = matched_danger_id
         else:
             st.toward_since = None
+            st.toward_danger_id = None
 
         if st.still_since is not None and t - st.still_since >= self.cfg.still_time_s:
             st.status = STATUS_STILL
@@ -107,6 +120,11 @@ class BehaviorAnalyzer:
     def status_of(self, pid: int) -> str:
         st = self._states.get(pid)
         return st.status if st else STATUS_OK
+
+    def toward_danger_of(self, pid: int) -> str | None:
+        """Brand id currently responsible for toward-danger, if identified."""
+        st = self._states.get(pid)
+        return st.toward_danger_id if st else None
 
     def drop_inactive(self, active_pids: set[int]) -> None:
         for pid in list(self._states):

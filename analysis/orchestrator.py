@@ -254,8 +254,15 @@ class OfflineConfig:
             "irr_sustain_s": self.irr_sustain_s,
             # B32 smoke-scene fix (B26 lesson: new fields MUST reach to_dict or
             # a manifest-recomputed run silently uses different thresholds).
+            "ignore_regions": [list(region) for region in self.ignore_regions],
+            "hazard_min_area": self.hazard_min_area,
+            "hazard_hold_s": self.hazard_hold_s,
+            "smoke_flow_ema": self.smoke_flow_ema,
             "hazard_smoke_window_s": self.hazard_smoke_window_s,
             "hazard_texture_min": self.hazard_texture_min,
+            "base_margin": self.base_margin,
+            "base_hysteresis": self.base_hysteresis,
+            "fire_require_smoke": self.fire_require_smoke,
         }
 
 

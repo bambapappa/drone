@@ -13,7 +13,8 @@ Categories (per the architecture report §3 and the build-order in §7):
                  (analysis/irrational.py); STILLA takes precedence over it
                  (see derive_events), MOT_FARA has no precedence interaction
                  with either.
-  HAZARD       — fire/smoke onset (carried-over SituationAnalyzer)
+  HAZARD       — internal compatibility enum for a persistent BRAND incident;
+                 fire/smoke are observations attached to that incident
 
 This pass is the marriage of the report's P4 (per-frame behavior/situation
 status) and P5 (status-stream diffing) into a single pass. The analyzers are
@@ -26,22 +27,24 @@ separately — we compute and diff in one pass.
 order, so two runs over the same P1+P2 (+P3) output produce byte-identical
 events. Mirrors the P1/P2/P3 guarantee.
 
-**The danger point.** The live system's MOT_FARA needs an operator-marked
-danger point. Offline, the natural source is the SituationAnalyzer's detected
-fire/smoke position (retroactive operator-marked queries are Phase 4). If no
-hazard is active in a frame, no danger point is fed to BehaviorAnalyzer that
-frame and MOT_FARA cannot fire — STILLA can.
+**Danger targets.** Offline, every active place-bound BRAND incident is a
+danger target. BehaviorAnalyzer evaluates movement against the full set and
+MOT_FARA evidence records the matching brand_id. A detected incident persists
+through visual detector gaps until video end, but local scene identities are
+never guessed across an unlinked B29 segment. Retroactive operator-marked
+queries remain the Phase 4 single-point human override.
 """
 
 from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Mapping
 
 import numpy as np
 
 from analysis.behavior import STATUS_STILL, STATUS_TOWARD, BehaviorAnalyzer, BehaviorConfig
+from analysis.brand import BrandIncident, BrandIncidentTracker, BrandObservation
 from analysis.irrational import CATEGORY_IRRATIONELL, IrrationalConfig, derive_irrational_events
 from analysis.orchestrator import OfflineConfig
 from analysis.situation import WORK_W, SituationAnalyzer
@@ -55,7 +58,8 @@ CATEGORY_HAZARD = "HAZARD"
 
 ALL_CATEGORIES = (CATEGORY_STILLA, CATEGORY_MOT_FARA, CATEGORY_IRRATIONELL, CATEGORY_HAZARD)
 
-DangerResolver = Callable[[int, int | None], "tuple[float, float] | None"]
+DangerSet = tuple[float, float] | Mapping[str, tuple[float, float]] | None
+DangerResolver = Callable[[int, int | None], DangerSet]
 
 
 def _event_id(category: str, seq: int) -> str:
@@ -170,12 +174,10 @@ def derive_behavior_events(
     applicable (HAZARD is null by construction; person-keyed categories are
     null only when P3 was skipped).
 
-    `danger_for_frame(frame_no, segment) -> (x, y) | None` is the danger point
-    in the analyzer's coordinate space, looked up per frame. When None (or
-    when it returns None for a frame), MOT_FARA cannot fire that frame —
-    STILLA can. The engine supplies the per-frame fire/smoke position
-    (scene-transformed per its own frame); the review layer supplies a
-    constant resolver for an operator-placed marker.
+    `danger_for_frame(frame_no, segment)` returns either one legacy point or
+    `{brand_id: point}` for every active incident in the analyzer's coordinate
+    space. When absent/empty, MOT_FARA cannot fire that frame — STILLA can.
+    The review layer's human marker remains a compatible scalar override.
     """
     if fps <= 0:
         return []
@@ -190,8 +192,10 @@ def derive_behavior_events(
 
     analyzer = BehaviorAnalyzer(_behavior_config_from_offline(config))
 
-    # Per-tracklet per-frame status timeline: {tracklet_id: [(frame_no, status, prone, speed)]}
-    timelines: dict[int, list[tuple[int, str, bool, float]]] = defaultdict(list)
+    # Per-tracklet per-frame status timeline. brand_id identifies which one of
+    # several simultaneous fire sites caused MOT_FARA; legacy/manual scalar
+    # danger points keep it None.
+    timelines: dict[int, list[tuple[int, str, bool, float, str | None]]] = defaultdict(list)
 
     for tid in sorted(by_tracklet.keys()):
         previous_segment: int | None = None
@@ -224,7 +228,8 @@ def derive_behavior_events(
             status, prone, speed = analyzer.update(
                 pid=tid, t=t, stab_pos=stab_pos, box_h=box_h, aspect=aspect, danger_stab=danger
             )
-            timelines[tid].append((frame_no, status, prone, speed))
+            brand_id = analyzer.toward_danger_of(tid) if status == STATUS_TOWARD else None
+            timelines[tid].append((frame_no, status, prone, speed, brand_id))
         # Free analyzer state for this tracklet so it cannot bleed into the
         # next one (BehaviorAnalyzer keeps per-pid state keyed by pid; since
         # each tid is unique that's already isolated, but we drop to keep
@@ -250,7 +255,7 @@ def derive_behavior_events(
 
 
 def _diff_status_timeline(
-    timeline: list[tuple[int, str, bool, float]],
+    timeline: list[tuple[int, str, bool, float, str | None]],
     tracklet_id: int,
     person_id: int | None,
     fps: float,
@@ -277,6 +282,7 @@ def _diff_status_timeline(
     span_start_frame: int = 0
     span_start_speeds: list[float] = []
     span_prone: list[bool] = []
+    span_brand_id: str | None = None
     seq = seq_start
 
     def flush(end_frame: int) -> None:
@@ -308,6 +314,8 @@ def _diff_status_timeline(
             "prone_majority": _majority(span_prone),
             "samples": len(span_start_speeds),
         }
+        if category == CATEGORY_MOT_FARA and span_brand_id is not None:
+            evidence["brand_id"] = span_brand_id
         ev = Event(
             event_id=_event_id(category, seq),
             category=category,
@@ -321,8 +329,9 @@ def _diff_status_timeline(
         seq += 1
 
     events_buf: list[Event] = []
-    for frame_no, status, prone, speed in timeline:
-        if status == span_status:
+    for frame_no, status, prone, speed, brand_id in timeline:
+        current_brand_id = brand_id if status == STATUS_TOWARD else None
+        if status == span_status and current_brand_id == span_brand_id:
             span_start_speeds.append(speed)
             span_prone.append(prone)
             continue
@@ -330,6 +339,7 @@ def _diff_status_timeline(
         if span_status is not None:
             flush(frame_no - 1)
         span_status = status if status in category_map else None
+        span_brand_id = current_brand_id
         span_start_frame = frame_no
         span_start_speeds = [speed] if status in category_map else []
         span_prone = [prone] if status in category_map else []
@@ -347,16 +357,15 @@ def _majority(xs: list[bool]) -> bool:
 
 
 def build_danger_resolver(
-    danger_px_by_frame: dict[int, tuple[float, float] | None],
+    danger_px_by_frame: dict[int, DangerSet],
     scene_frames: dict[int, dict[str, Any]] | None,
 ) -> DangerResolver | None:
     """Build a per-frame danger resolver in the BehaviorAnalyzer's space.
 
-    For each frame with a detected danger point: if that frame has its own
-    `frame_to_scene` matrix (B29), transform the pixel danger into scene
-    coordinates with THAT frame's matrix (the scene the analyzer stabilizes
-    against); otherwise keep it in pixel coordinates. Frames without danger
-    resolve to None — MOT_FARA cannot fire there.
+    For each frame with one or several danger points: if that frame has its
+    own `frame_to_scene` matrix (B29), transform every point into that scene;
+    otherwise keep pixel coordinates. Multiple brand ids are never averaged
+    or collapsed. Frames without danger resolve to None.
 
     Returns None when no frame ever had a danger point, so the caller can omit
     MOT_FARA entirely. This replaces the old mean-danger collapse, which
@@ -364,21 +373,39 @@ def build_danger_resolver(
     measured on no frame that landed in empty space when fire moved (a breach
     of B29's own anti-fabrication principle). Pure and deterministic.
     """
-    resolved: dict[int, tuple[float, float]] = {}
-    for frame_no, px in danger_px_by_frame.items():
-        if px is None:
+    resolved: dict[int, DangerSet] = {}
+    resolved_segments: dict[int, int | None] = {}
+    for frame_no, danger in danger_px_by_frame.items():
+        if danger is None:
             continue
         scene_rec = (scene_frames or {}).get(frame_no)
-        if scene_rec is not None and scene_rec.get("frame_to_scene") is not None:
+        matrix = scene_rec.get("frame_to_scene") if scene_rec is not None else None
+        resolved_segments[frame_no] = (
+            int(scene_rec["scene_segment"])
+            if matrix is not None and scene_rec.get("scene_segment") is not None
+            else None
+        )
+        if isinstance(danger, Mapping):
             from analysis.scene import transform_point
 
-            resolved[frame_no] = transform_point(scene_rec["frame_to_scene"], px)
+            resolved[frame_no] = {
+                brand_id: transform_point(matrix, point) if matrix is not None else point
+                for brand_id, point in danger.items()
+            }
         else:
-            resolved[frame_no] = px
+            if matrix is not None:
+                from analysis.scene import transform_point
+
+                resolved[frame_no] = transform_point(matrix, danger)
+            else:
+                resolved[frame_no] = danger
     if not resolved:
         return None
 
-    def resolver(frame_no: int, segment: int | None) -> tuple[float, float] | None:
+    def resolver(frame_no: int, segment: int | None) -> DangerSet:
+        expected_segment = resolved_segments.get(frame_no)
+        if expected_segment is not None and segment != expected_segment:
+            return None
         return resolved.get(frame_no)
 
     return resolver
@@ -390,15 +417,11 @@ def derive_hazard_events(
     config: OfflineConfig,
     ignore_regions: list[tuple[float, float, float, float]] | None = None,
 ) -> list[Event]:
-    """Replay SituationAnalyzer over a frame stream and diff fire/smoke into
-    HAZARD events.
+    """Replay SituationAnalyzer and aggregate its signals into BRAND events.
 
-    HAZARD events are not person-keyed (a fire is not a person); person_id
-    is always None. `evidence.kind` distinguishes fire vs smoke. The kind is
-    taken from the SituationAnalyzer's fire/smoke fields, which are gated by
-    `hold_s` inside the analyzer — so by the time we see a transition into
-    "fire present", it has already been sustained for hold_s, and the event
-    onset is back-dated to the analyzer's `Hazard.since`.
+    HAZARD remains the sidecar enum for compatibility; evidence.kind is
+    `brand`, while evidence.signals audits whether smoke, fire-colour, or both
+    were observed. Every place-bound incident remains active to video end.
 
     `ignore_regions` are the normalized PiP/IR regions to black out before
     the situation masks run (carried forward verbatim from the live tool).
@@ -417,29 +440,71 @@ def derive_hazard_events(
         smoke_texture_min=config.hazard_texture_min,
     )
 
-    # Per-kind timeline: fire / smoke presence per frame, plus area for
-    # confidence scoring.
-    fire_timeline: list[tuple[int, bool, float]] = []
-    smoke_timeline: list[tuple[int, bool, float]] = []
-    danger_pts: list[tuple[int, tuple[float, float] | None]] = []
-
     frame_no = 0
+    tracker: BrandIncidentTracker | None = None
     for frame in frames:
+        if tracker is None:
+            frame_h, frame_w = frame.shape[:2]
+            tracker = BrandIncidentTracker(association_radius=sit.fire_smoke_radius * max(frame_w, frame_h))
         t = frame_no / fps
         state = sit.update(frame, t, danger_norm=None, ignore=ignore_regions)
-        if state.fire is not None:
-            fire_timeline.append((frame_no, True, state.fire.area))
-            danger_pts.append((frame_no, state.fire.pos))
-        else:
-            fire_timeline.append((frame_no, False, 0.0))
-            if state.smoke is not None:
-                danger_pts.append((frame_no, state.smoke.pos))
-            else:
-                danger_pts.append((frame_no, None))
-        smoke_timeline.append((frame_no, state.smoke is not None, state.smoke.area if state.smoke else 0.0))
+        observations = []
+        for hazard in (*state.fire_hazards, *state.smoke_hazards):
+            if hazard.observed:
+                observations.append(
+                    BrandObservation(
+                        frame_no=frame_no,
+                        signal=hazard.kind,
+                        pos=(hazard.pos[0] * frame_w, hazard.pos[1] * frame_h),
+                        area=hazard.area,
+                        scene_segment=None,
+                    )
+                )
+        tracker.observe(observations)
         frame_no += 1
 
-    return _diff_and_number_hazard_events(fire_timeline, smoke_timeline, fps)
+    if tracker is None or frame_no == 0:
+        return []
+    return _brand_incidents_to_events(tracker.incidents(end_frame=frame_no - 1, fps=fps), fps)
+
+
+def _brand_incidents_to_events(incidents: list[BrandIncident], fps: float) -> list[Event]:
+    """Serialize persistent fire sites as the existing HAZARD category.
+
+    `kind=brand` is the operational meaning.  `signals` preserves whether the
+    detector saw smoke, fire-colour, or both without presenting those signals
+    as separate incidents.
+    """
+    events = []
+    for seq, incident in enumerate(sorted(incidents, key=lambda item: item.brand_id)):
+        observed_duration_s = incident.observed_frame_count / fps
+        events.append(
+            Event(
+                event_id=_event_id(CATEGORY_HAZARD, seq),
+                category=CATEGORY_HAZARD,
+                person_id=None,
+                t_start=incident.t_start,
+                t_end=incident.t_end,
+                confidence=min(1.0, incident.area_mean * 20.0 + observed_duration_s / 4.0),
+                evidence={
+                    "kind": "brand",
+                    "brand_id": incident.brand_id,
+                    "signals": sorted(incident.signals),
+                    "scene_segment": incident.scene_segment,
+                    "anchor": [round(value, 3) for value in incident.anchor],
+                    "frame_start": incident.frame_start,
+                    "frame_end": incident.frame_end,
+                    "last_observed_frame": incident.last_observed_frame,
+                    "observation_count": incident.observation_count,
+                    "observed_frame_count": incident.observed_frame_count,
+                    "duration_s": round(incident.t_end - incident.t_start, 3),
+                    "area_mean": round(incident.area_mean, 5),
+                    "area_peak": round(incident.area_peak, 5),
+                    "status": "active_at_video_end",
+                },
+            )
+        )
+    return events
 
 
 def _diff_and_number_hazard_events(
@@ -558,10 +623,8 @@ def derive_events(
     """Top-level P5 derivation: behavior + situation → events.
 
     Combines derive_behavior_events and derive_hazard_events into one call.
-    The behavior derivation uses the *dynamic* danger point taken from the
-    situation analyzer's fire/smoke detection per frame (fire preferred over
-    smoke). When neither is active, danger is None that frame and MOT_FARA
-    cannot fire — STILLA can.
+    The behavior derivation uses every active place-bound BRAND incident as a
+    dynamic danger target. When none exists, MOT_FARA cannot fire — STILLA can.
 
     The two sub-derivations are independent: behavior runs over tracklets
     (cheap, no frame pixels needed beyond P2's already-adjusted boxes), and
@@ -601,12 +664,11 @@ def derive_events(
     # absdiff threshold. Minimum span is 2 frames.
     k = max(2, round(config.hazard_smoke_window_s * fps))
 
-    # Per-frame danger point in pixels (or None). Also the input for the
-    # hazard diff, computed as a by-product so we only walk the frame stream
-    # once.
-    fire_timeline: list[tuple[int, bool, float]] = []
-    smoke_timeline: list[tuple[int, bool, float]] = []
-    danger_px_by_frame: dict[int, tuple[float, float] | None] = {}
+    # Persistent, place-bound BRAND incidents.  Fire/smoke remain detector
+    # signals; the operational incident and MOT_FARA substrate are shared.
+    brand_tracker = BrandIncidentTracker(association_radius=sit.fire_smoke_radius * max(frame_w, frame_h))
+    dangers_by_frame: dict[int, dict[str, tuple[float, float]]] = {}
+    danger_segments_by_frame: dict[int, int | None] = {}
 
     frame_no = 0
     scene_hist: dict[int, dict[str, Any]] = {}  # last k+1 scene records
@@ -651,19 +713,32 @@ def derive_events(
         if scene_rec is not None:
             scene_hist[frame_no] = scene_rec
             scene_hist.pop(frame_no - k, None)
-        if state.fire is not None:
-            fire_timeline.append((frame_no, True, state.fire.area))
-            danger_px_by_frame[frame_no] = (state.fire.pos[0] * frame_w, state.fire.pos[1] * frame_h)
-        else:
-            fire_timeline.append((frame_no, False, 0.0))
-            if state.smoke is not None:
-                danger_px_by_frame[frame_no] = (
-                    state.smoke.pos[0] * frame_w,
-                    state.smoke.pos[1] * frame_h,
+        coordinate_segment = (
+            int(scene_rec["scene_segment"])
+            if scene_rec is not None and scene_rec.get("frame_to_scene") is not None
+            else None
+        )
+        observations = []
+        for hazard in (*state.fire_hazards, *state.smoke_hazards):
+            if not hazard.observed:
+                continue
+            pos = (hazard.pos[0] * frame_w, hazard.pos[1] * frame_h)
+            if scene_rec is not None and scene_rec.get("frame_to_scene") is not None:
+                from analysis.scene import transform_point
+
+                pos = transform_point(scene_rec["frame_to_scene"], pos)
+            observations.append(
+                BrandObservation(
+                    frame_no=frame_no,
+                    signal=hazard.kind,
+                    pos=pos,
+                    area=hazard.area,
+                    scene_segment=coordinate_segment,
                 )
-            else:
-                danger_px_by_frame[frame_no] = None
-        smoke_timeline.append((frame_no, state.smoke is not None, state.smoke.area if state.smoke else 0.0))
+            )
+        brand_tracker.observe(observations)
+        dangers_by_frame[frame_no] = brand_tracker.danger_targets(frame_no, coordinate_segment)
+        danger_segments_by_frame[frame_no] = coordinate_segment
         frame_no += 1
 
     # Behavior events: MOT_FARA resolves the danger point per frame from the
@@ -677,7 +752,14 @@ def derive_events(
     # reviewer-driven hazard marker (review/hazard.py) is a separate constant
     # resolver merged in at read time exactly like Phase 3's verdicts overlay;
     # it never rewrites this engine output.
-    danger_for_frame = build_danger_resolver(danger_px_by_frame, scene_frames)
+    danger_for_frame = None
+    if any(dangers_by_frame.values()):
+
+        def danger_for_frame(frame_no: int, segment: int | None) -> DangerSet:
+            expected_segment = danger_segments_by_frame.get(frame_no)
+            if expected_segment is not None and segment != expected_segment:
+                return None
+            return dangers_by_frame.get(frame_no)
 
     behavior_events = derive_behavior_events(
         tracklet_rows,
@@ -711,8 +793,11 @@ def derive_events(
         still_frames_by_tracklet=still_frames_by_tracklet,
     )
 
-    # Hazard events: diff the timelines we already collected.
-    hazard_events = _diff_and_number_hazard_events(fire_timeline, smoke_timeline, fps)
+    # BRAND incidents persist to video end; detector gaps update
+    # last_observed_frame but do not pretend that the physical fire stopped.
+    hazard_events = _brand_incidents_to_events(
+        brand_tracker.incidents(end_frame=max(0, frame_no - 1), fps=fps), fps
+    )
 
     # Merge into a single time-ordered log. Stable sort preserves the
     # within-category ordering above.

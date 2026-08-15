@@ -975,7 +975,7 @@ async def delete_hazard_marker(
     run_id: str, settings: ReviewSettings = Depends(get_settings)
 ) -> dict[str, Any]:
     """Clear the manual override — MOT_FARA reverts to the engine's own
-    time-weighted-mean danger point on the next read."""
+    engine-derived brand targets on the next read."""
     _annotation_store(settings, run_id).clear_hazard_marker()
     return {"active": False}
 

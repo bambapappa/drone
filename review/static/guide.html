@@ -133,9 +133,9 @@ diskuterar ett exakt ögonblick.</p>
 <table>
   <tr><th>Flagga</th><th>Betyder</th></tr>
   <tr><td><span class="tag stilla">STILLA</span></td><td>Personen har legat/stått nästan helt stilla i flera sekunder — möjligen skadad. Tiden som visas är när AI:n blev säker, den faktiska stillheten började tidigare.</td></tr>
-  <tr><td><span class="tag motfara">MOT FARA</span></td><td>Personen rör sig ihållande mot farans position (upptäckt eld/rök, eller er egen faromarkör — se <a href="#faromarkor">avsnitt 10</a>).</td></tr>
+  <tr><td><span class="tag motfara">MOT FARA</span></td><td>Personen rör sig ihållande mot någon aktiv brandhärd, eller mot er egen faromarkör — se <a href="#faromarkor">avsnitt 10</a>. Händelsen anger vilken brandhärd som matchade.</td></tr>
   <tr><td><span class="tag irr">IRRATIONELLT</span></td><td>Avvikande rörelsemönster: irrande väg, panikspurt, rörelse mot strömmen, fram-och-tillbaka-pendling eller frys-och-rusa. Varje flagga anger vilka signaler som slog till och deras uppmätta värden — aldrig bara ordet.</td></tr>
-  <tr><td><span class="tag fara">FARA</span></td><td>Eld eller rök har upptäckts i bilden.</td></tr>
+  <tr><td><span class="tag fara">BRAND</span></td><td>En plats där rök eller eld har bekräftats. Rök och eld visas inte som skilda händelser. Flera platser får egna brand-ID och en bekräftad brand ligger kvar till filmens slut även om sikten tillfälligt försvinner.</td></tr>
 </table>
 <div class="note warn">Alla flaggor är förslag från enkla, genomskinliga regler. Barn som leker,
 räddningspersonal som går mot strömmen och hundar kan ge falska utslag — det är därför varje
@@ -143,7 +143,7 @@ händelse granskas av en människa.</div>
 
 <h2 id="tidslinjen">6. Tidslinjen</h2>
 <p>Fliken <strong>Tidslinje</strong> visar hela filmen som en remsa: en rad per person med färgade band
-där flaggor varit aktiva, en rad för eld/rök, en för bokmärken och en för operatörens anteckningar.
+där flaggor varit aktiva, en rad för brandhärdar, en för bokmärken och en för operatörens anteckningar.
 Klicka var som helst på remsan så hoppar videon dit. En 16-minutersfilm överblickas på några sekunder.</p>
 
 <h2 id="granskning">7. Granska händelser (bekräfta/avvisa)</h2>

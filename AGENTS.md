@@ -167,18 +167,21 @@ stream diffing). The analyzers are stateless per-call, so there's no value
 in persisting per-frame status separately — derive events in one pass.
 
 Categories: `STILLA` (sustained no-motion), `MOT_FARA` (sustained motion
-toward the danger point), `IRRATIONELL` (Phase 4 sub-signal ensemble, see
-below), `HAZARD` (fire/smoke onset).
+toward an active fire site), `IRRATIONELL` (Phase 4 sub-signal ensemble, see
+below), `HAZARD` (backward-compatible internal enum for a user-facing BRAND
+incident).
 
 - **Person-keyed categories** (`STILLA`/`MOT_FARA`/`IRRATIONELL`) carry
   `person_id` when P3 ran, null otherwise. `HAZARD` is always
   `person_id=null` (a fire is not a person).
-- **Danger point.** The live system's MOT_FARA needs an operator-marked
-  danger point. Offline, P5 uses the SituationAnalyzer's detected fire/smoke
-  position (time-weighted mean across the film) as the danger point. When no
-  hazard ever fires, MOT_FARA cannot be derived; STILLA can. Phase 4 adds a
-  reviewer-driven override on top of this engine-computed default — see
-  below.
+- **Multiple fire sites.** Fire-colour and smoke are detector observations,
+  not separate operational events. P5 associates them into persistent,
+  place-bound BRAND incidents (`brand_id`) inside each linked B29 scene
+  segment. Every active incident remains a separate danger target through the
+  end of the film. MOT_FARA is evaluated against all targets and records the
+  matching `brand_id`. Incidents are never auto-merged across an unlinked
+  segment; local maps on either side are unrelated. Phase 4's human marker is
+  still a deliberate single-point override — see below.
 - **Determinism.** P5 drives the analyzers in fixed (frame_no, tracklet_id)
   order with no RNG — two runs over the same P1+P2(+P3) output produce
   byte-identical events, mirroring the P1/P2/P3 guarantee.

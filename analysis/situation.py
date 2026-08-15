@@ -22,12 +22,15 @@ class Hazard:
     pos: tuple[float, float]  # normalized 0..1
     area: float  # fraction of frame
     since: float
+    observed: bool = True
 
 
 @dataclass
 class SituationState:
     fire: Hazard | None = None
     smoke: Hazard | None = None
+    fire_hazards: list[Hazard] = field(default_factory=list)
+    smoke_hazards: list[Hazard] = field(default_factory=list)
     smoke_drift: tuple[float, float] = (0.0, 0.0)  # normalized px/s, EMA-smoothed
     base: tuple[float, float] | None = None  # normalized 0..1
     base_reasons: list[str] = field(default_factory=list)
@@ -67,30 +70,43 @@ def smoke_mask(
     return m
 
 
-def _blob_texture(gray: np.ndarray, mask: np.ndarray) -> float | None:
-    """Median |Laplacian| inside the largest blob of `mask` — turbulent
-    internal structure. Measured on the real film (DECISIONS B32): smoke-half
-    blobs 16–68, no-smoke (gray traffic / warp residue) 3–7; threshold 12 sits
-    between. Pure image-plane measurement, so GMC drift cannot break it (scene-
-    coordinate discriminators were measured to fail)."""
-    n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+def _blob_components(
+    mask: np.ndarray,
+) -> tuple[list[tuple[tuple[float, float], float, int]], np.ndarray]:
+    """All blobs as (normalized centroid, area fraction, label) + label map.
+
+    Returning one shared label map avoids allocating a full-frame boolean mask
+    for every tiny component in a noisy frame.
+    """
+    n, labels, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
     if n <= 1:
-        return None
-    i = int(np.argmax(stats[1:, cv2.CC_STAT_AREA])) + 1
-    lap = np.abs(cv2.Laplacian(gray, cv2.CV_32F))
-    return float(np.median(lap[labels == i]))
+        return [], labels
+    h, w = mask.shape
+    blobs = []
+    for i in range(1, n):
+        cx, cy = centroids[i]
+        blobs.append(
+            (
+                (float(cx) / w, float(cy) / h),
+                float(stats[i, cv2.CC_STAT_AREA]) / (w * h),
+                i,
+            )
+        )
+    return sorted(blobs, key=lambda item: (-item[1], item[0][0], item[0][1])), labels
 
 
 def _largest_blob(mask: np.ndarray) -> tuple[tuple[float, float], float] | None:
     """((cx, cy) normalized, area fraction) of the largest connected component."""
-    n, labels, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    if n <= 1:
-        return None
-    areas = stats[1:, cv2.CC_STAT_AREA]
-    i = int(np.argmax(areas)) + 1
-    h, w = mask.shape
-    cx, cy = centroids[i]
-    return (float(cx) / w, float(cy) / h), float(stats[i, cv2.CC_STAT_AREA]) / (w * h)
+    blobs, _ = _blob_components(mask)
+    return blobs[0][:2] if blobs else None
+
+
+@dataclass
+class _HazardTrack:
+    pos: tuple[float, float]
+    area: float
+    since: float
+    last_seen: float
 
 
 def _dir_text(dx: float, dy: float) -> str:
@@ -181,8 +197,7 @@ class SituationAnalyzer:
         self.state = SituationState()
         self._prev_gray: np.ndarray | None = None
         self._gray_buf: list[tuple[float, np.ndarray]] = []
-        self._fire_since: float | None = None
-        self._smoke_since: float | None = None
+        self._hazard_tracks: dict[str, list[_HazardTrack]] = {"fire": [], "smoke": []}
         self._drift = np.zeros(2)
         self._base_target: tuple[float, float] | None = None
 
@@ -235,19 +250,24 @@ class SituationAnalyzer:
             # Legacy path: previous frame, exactly today's behaviour.
             sm = smoke_mask(small, self._prev_gray, gray)
 
-        fire_blob = _largest_blob(fm)
-        if fire_blob is not None and self.fire_require_smoke and not self._smoke_near(sm, fire_blob[0]):
-            fire_blob = None  # red roofs / sunset etc. — saturated colour but no smoke
-        self.state.fire = self._hold("fire", fire_blob, t, self.state.fire, "_fire_since")
-        smoke_blob = _largest_blob(sm)
-        if scene_motion and smoke_blob is not None:
-            texture = _blob_texture(gray, sm)
-            if texture is None or texture < self.smoke_texture_min:
-                # Flat gray blob: traffic/warp residue, not turbulent smoke.
-                # Same gating pattern as fire_require_smoke. Scene path only —
-                # the legacy path stays bit-identical.
-                smoke_blob = None
-        self.state.smoke = self._hold("smoke", smoke_blob, t, self.state.smoke, "_smoke_since")
+        fire_components, _ = _blob_components(fm)
+        fire_blobs = [blob[:2] for blob in fire_components]
+        if self.fire_require_smoke:
+            fire_blobs = [blob for blob in fire_blobs if self._smoke_near(sm, blob[0])]
+        smoke_blobs = []
+        smoke_components, smoke_labels = _blob_components(sm)
+        lap = np.abs(cv2.Laplacian(gray, cv2.CV_32F)) if scene_motion else None
+        for pos, area, component_label in smoke_components:
+            if scene_motion:
+                texture = float(np.median(lap[smoke_labels == component_label]))
+                if texture < self.smoke_texture_min:
+                    continue
+            smoke_blobs.append((pos, area))
+
+        self.state.fire_hazards = self._hold_many("fire", fire_blobs, t)
+        self.state.smoke_hazards = self._hold_many("smoke", smoke_blobs, t)
+        self.state.fire = self.state.fire_hazards[0] if self.state.fire_hazards else None
+        self.state.smoke = self.state.smoke_hazards[0] if self.state.smoke_hazards else None
 
         # Smoke drift: median Farneback flow inside the smoke mask, EMA-smoothed.
         if self._prev_gray is not None and self._prev_gray.shape == gray.shape and sm.sum() > 20:
@@ -275,21 +295,50 @@ class SituationAnalyzer:
             return False
         return float(window.mean()) >= self.fire_smoke_min_frac
 
-    def _hold(self, kind: str, blob, t: float, prev: Hazard | None, since_attr: str) -> Hazard | None:
-        """Require min area sustained for hold_s before reporting; keep last
-        position briefly to avoid flicker."""
-        since = getattr(self, since_attr)
-        if blob is not None and blob[1] >= self.min_area:
-            if since is None:
-                setattr(self, since_attr, t)
-                since = t
-            if t - since >= self.hold_s:
-                return Hazard(kind=kind, pos=blob[0], area=blob[1], since=since)
-            return prev
-        setattr(self, since_attr, None)
-        if prev is not None and t - prev.since < self.hold_s * 4:
-            return prev  # short grace to avoid flicker
-        return None
+    def _hold_many(self, kind: str, blobs: list[tuple[tuple[float, float], float]], t: float) -> list[Hazard]:
+        """Sustain and associate multiple same-signal blobs independently."""
+        tracks = self._hazard_tracks[kind]
+        claimed: set[int] = set()
+        for pos, area in blobs:
+            if area < self.min_area:
+                continue
+            candidates = []
+            for index, track in enumerate(tracks):
+                if index in claimed:
+                    continue
+                radius = max(0.08, 2.0 * math.sqrt(max(area, track.area)))
+                distance = math.dist(pos, track.pos)
+                if distance <= radius:
+                    candidates.append((distance, index, track))
+            if candidates:
+                _, index, track = min(candidates, key=lambda item: (item[0], item[1]))
+                track.pos = pos
+                track.area = area
+                track.last_seen = t
+            else:
+                track = _HazardTrack(pos=pos, area=area, since=t, last_seen=t)
+                tracks.append(track)
+                index = len(tracks) - 1
+            claimed.add(index)
+
+        grace = self.hold_s * 4
+        self._hazard_tracks[kind] = [
+            track
+            for track in tracks
+            if track.last_seen == t or (t - track.since >= self.hold_s and t - track.last_seen < grace)
+        ]
+        hazards = [
+            Hazard(
+                kind=kind,
+                pos=track.pos,
+                area=track.area,
+                since=track.since,
+                observed=track.last_seen == t,
+            )
+            for track in self._hazard_tracks[kind]
+            if t - track.since >= self.hold_s
+        ]
+        return sorted(hazards, key=lambda hazard: (-hazard.area, hazard.pos[0], hazard.pos[1]))
 
     def _suggest_base(
         self, danger_norm: tuple[float, float] | None, small_bgr: np.ndarray, sm: np.ndarray

@@ -152,6 +152,52 @@ class TestBehaviorEventDiff:
         mot = [e for e in events if e.category == CATEGORY_MOT_FARA]
         assert len(mot) >= 1
 
+    def test_mot_fara_matches_any_active_brand_and_records_which_one(self):
+        fps = 10.0
+        frames = list(range(80))
+        xyxy_seq = [(50.0 + i * 4.0, 100.0, 80.0 + i * 4.0, 180.0) for i in frames]
+        rows = _trk(1, frames, xyxy_seq, fps=fps)
+
+        events = derive_behavior_events(
+            rows,
+            person_by_tracklet={1: 42},
+            fps=fps,
+            frame_w=1280,
+            frame_h=720,
+            config=_beh_config(),
+            danger_for_frame=lambda fn, s: {
+                "brand-behind": (0.0, 140.0),
+                "brand-ahead": (1000.0, 140.0),
+            },
+        )
+
+        mot = [event for event in events if event.category == CATEGORY_MOT_FARA]
+        assert mot
+        assert {event.evidence["brand_id"] for event in mot} == {"brand-ahead"}
+
+    def test_switching_brand_target_starts_a_new_mot_fara_span(self):
+        fps = 10.0
+        frames = list(range(120))
+        xyxy_seq = [(50.0 + i * 4.0, 100.0, 80.0 + i * 4.0, 180.0) for i in frames]
+        rows = _trk(1, frames, xyxy_seq, fps=fps)
+
+        def dangers(frame_no, segment):
+            brand_id = "brand-a" if frame_no < 60 else "brand-b"
+            return {brand_id: (1000.0, 140.0)}
+
+        events = derive_behavior_events(
+            rows,
+            person_by_tracklet={1: 42},
+            fps=fps,
+            frame_w=1280,
+            frame_h=720,
+            config=_beh_config(),
+            danger_for_frame=dangers,
+        )
+
+        mot = [event for event in events if event.category == CATEGORY_MOT_FARA]
+        assert [event.evidence["brand_id"] for event in mot] == ["brand-a", "brand-b"]
+
     def test_no_mot_fara_without_danger_point(self):
         # With no danger point supplied (the offline default until a hazard is
         # detected), MOT_FARA cannot be derived at all — STILLA still can be.
@@ -270,6 +316,28 @@ class TestHazardEventDiff:
         frames = [_solid_frame(160, 160, 160) for _ in range(40)]
         events = derive_hazard_events(frames, fps=10.0, config=_sit_config())
         assert len(events) == 0
+
+    def test_two_fire_sites_become_two_persistent_brand_events(self):
+        frames = []
+        for _ in range(20):
+            frame = np.zeros((180, 320, 3), dtype=np.uint8)
+            frame[40:80, 30:80] = (20, 60, 230)
+            frame[100:150, 240:300] = (20, 60, 230)
+            frames.append(frame)
+        config = _sit_config()
+        config.hazard_hold_s = 0.0
+        config.fire_require_smoke = False
+
+        events = derive_hazard_events(frames, fps=10.0, config=config)
+
+        assert len(events) == 2
+        assert {event.evidence["kind"] for event in events} == {"brand"}
+        assert {event.evidence["brand_id"] for event in events} == {
+            "brand-000000",
+            "brand-000001",
+        }
+        assert all(event.evidence["signals"] == ["fire"] for event in events)
+        assert all(event.t_end == 2.0 for event in events)
 
     def test_fire_event_requires_sustained_smoke(self):
         # The live SituationAnalyzer is gated on smoke_near (DECISIONS B18) —
@@ -440,7 +508,12 @@ class TestSceneCompensatedSmoke:
             ignore_regions=None,
             scene_frames=self._scene_frames(30),
         )
-        assert any(e.category == CATEGORY_HAZARD and e.evidence["kind"] == "smoke" for e in events)
+        assert any(
+            e.category == CATEGORY_HAZARD
+            and e.evidence["kind"] == "brand"
+            and "smoke" in e.evidence["signals"]
+            for e in events
+        )
 
     def test_segment_break_no_crash_no_smoke(self):
         # Same panning gray rectangle, but the scene record switches segment
@@ -643,6 +716,21 @@ class TestBuildDangerResolver:
         assert resolver(0, 0) == transform_point(m0, (100.0, 100.0))
         assert resolver(1, 0) == transform_point(m1, (100.0, 100.0))
         assert resolver(0, 0) != resolver(1, 0)
+
+    def test_multiple_brands_are_transformed_without_collapsing_them(self):
+        matrix = np.array([[1.0, 0.0, 10.0], [0.0, 1.0, 20.0], [0.0, 0.0, 1.0]])
+        scene_frames = {0: {"frame_to_scene": matrix, "scene_segment": 0}}
+        resolver = build_danger_resolver(
+            {0: {"brand-a": (100.0, 100.0), "brand-b": (300.0, 200.0)}},
+            scene_frames,
+        )
+
+        assert resolver is not None
+        assert resolver(0, 0) == {
+            "brand-a": transform_point(matrix, (100.0, 100.0)),
+            "brand-b": transform_point(matrix, (300.0, 200.0)),
+        }
+        assert resolver(0, 99) is None
 
     def test_none_when_no_danger_ever(self):
         assert build_danger_resolver({}, scene_frames=None) is None

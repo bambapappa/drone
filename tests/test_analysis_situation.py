@@ -73,6 +73,34 @@ def test_no_fire_on_neutral_frame():
     assert state.fire is None
 
 
+def test_multiple_fire_blobs_are_exposed_as_separate_brand_signals():
+    frame = np.zeros((180, 320, 3), dtype=np.uint8)
+    frame[40:80, 30:80] = (20, 60, 230)
+    frame[100:150, 240:300] = (20, 60, 230)
+    analyzer = SituationAnalyzer(min_area=0.004, hold_s=0.0, fire_require_smoke=False)
+
+    state = analyzer.update(frame, 0.0, None)
+
+    assert len(state.fire_hazards) == 2
+    assert state.fire == state.fire_hazards[0]
+    assert state.fire_hazards[0].pos != state.fire_hazards[1].pos
+
+
+def test_hold_grace_is_not_reported_as_a_fresh_observation():
+    fire = np.zeros((180, 320, 3), dtype=np.uint8)
+    fire[40:100, 80:160] = (20, 60, 230)
+    blank = np.zeros_like(fire)
+    analyzer = SituationAnalyzer(min_area=0.004, hold_s=0.1, fire_require_smoke=False)
+
+    analyzer.update(fire, 0.0, None)
+    confirmed = analyzer.update(fire, 0.1, None)
+    confirmed_observed = confirmed.fire.observed if confirmed.fire is not None else None
+    held = analyzer.update(blank, 0.2, None)
+
+    assert confirmed_observed is True
+    assert held.fire is not None and held.fire.observed is False
+
+
 def test_base_opposite_danger():
     an = SituationAnalyzer()
     frame = solid((90, 90, 90))

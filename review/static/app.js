@@ -27,7 +27,7 @@ const CATEGORY_LABEL = {
   STILLA: "STILLA",
   MOT_FARA: "MOT FARA",
   IRRATIONELL: "IRRATIONELLT",
-  HAZARD: "FARA",
+  HAZARD: "BRAND",
 };
 
 // ---------- i18n: review-verdict state → Swedish display label ----------
@@ -993,9 +993,11 @@ function renderEvents() {
     const pid = ev.person_id != null ? `P${ev.person_id}` : "—";
     const dur = (ev.t_end - ev.t_start).toFixed(1);
     const meta = `<span class="meta">${fmtT(ev.t_start)} · ${dur}s · ${pid} · v ${ev.confidence.toFixed(2)}</span>`;
-    // IRRATIONELL's evidence has no bare "kind" — it names which sub-signals
-    // fired (report §4: never a bare label). HAZARD keeps its fire/smoke tag.
-    const note = ev.evidence && ev.evidence.kind
+    // Fire/smoke are detector evidence for one operational BRAND incident,
+    // never separate user-facing event types.
+    const note = ev.category === "HAZARD" && ev.evidence && ev.evidence.brand_id
+      ? `<span class="note">${esc(ev.evidence.brand_id)}</span>`
+      : ev.evidence && ev.evidence.kind
       ? `<span class="note">typ: ${ev.evidence.kind}</span>`
       : ev.evidence && ev.evidence.summary
         ? `<span class="note">${esc(ev.evidence.summary)}</span>`

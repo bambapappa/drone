@@ -1,5 +1,13 @@
 # Session handoff
 
+## 2026-08-15 — B33 flera långlivade brandhärdar, implementation pågår
+
+- **Nytt användarbeslut:** rök och eld ska inte vara skilda händelser. De är observationssignaler för en platsbunden `BRAND`; flera härdar måste kunna vara aktiva samtidigt så att `MOT_FARA` bedöms mot rätt plats. En bekräftad härd hålls aktiv till filmens slut.
+- **Implementerat lokalt, ännu inte committat/pushat:** `analysis/brand.py` med deterministiska `brand_id`, platsassociation och segmentgräns; flera fire/smoke-komponenter i `SituationAnalyzer`; mängd av faropunkter i `BehaviorAnalyzer`/P5; `MOT_FARA.evidence.brand_id`; UI/debrief visar BRAND medan intern `HAZARD`-enum består för sidecar-kompatibilitet.
+- **Ärlighetsgräns:** B29-scenbrott får aldrig auto-merge. Samma fysiska brand kan därför få flera ID över ett visuellt tapp tills operatörsmerge/georeferens finns. Den manuella Phase 4-markören är fortsatt en enkelpunkts-override.
+- **Proveniensfix:** `OfflineConfig.to_dict()` bär nu `ignore_regions` samt samtliga situationströsklar. Det ändrar config-hash för den kommande riktiga körningen och stänger B32:s dokumenterade manifestlucka.
+- **Verifierat hittills:** full `make test` efter kärnimplementation och kodgranskningsfixar gav **497 passed**; ruff och JavaScript-syntax är gröna. Ny riktigfilmsacceptans återstår. Det gamla B32-kvittot gäller exakt sin låsta kod-SHA och kan inte användas som acceptans för B33.
+
 ## 2026-08-15 — Superpowers Task 4, verifiering före PR
 
 - **Status:** Implementationsdelen är klar på `fix/smoke-scene-compensated-motion`; PR är medvetet inte öppnad ännu, eftersom separat spec- och kvalitetsgranskning återstår. Anspråksraden för arbetet är borttagen ur `HANDOFF.md` enligt planen.

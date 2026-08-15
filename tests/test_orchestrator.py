@@ -146,3 +146,24 @@ class TestOfflineConfig:
         assert config.model == "yolo11n.pt"
         assert config.device == "cpu"
         assert config.seed == 42
+
+    def test_to_dict_includes_full_situation_provenance(self):
+        config = OfflineConfig(
+            ignore_regions=[(0.64, 0.0, 0.36, 0.46)],
+            hazard_min_area=0.005,
+            hazard_hold_s=3.0,
+            smoke_flow_ema=0.2,
+            base_margin=0.09,
+            base_hysteresis=0.16,
+            fire_require_smoke=False,
+        )
+
+        serialized = config.to_dict()
+
+        assert serialized["ignore_regions"] == [[0.64, 0.0, 0.36, 0.46]]
+        assert serialized["hazard_min_area"] == 0.005
+        assert serialized["hazard_hold_s"] == 3.0
+        assert serialized["smoke_flow_ema"] == 0.2
+        assert serialized["base_margin"] == 0.09
+        assert serialized["base_hysteresis"] == 0.16
+        assert serialized["fire_require_smoke"] is False

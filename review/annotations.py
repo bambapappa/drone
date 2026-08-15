@@ -404,7 +404,7 @@ class AnnotationStore:
 
     def clear_hazard_marker(self) -> dict[str, Any]:
         """Remove the manual override — MOT_FARA falls back to the engine's
-        own time-weighted-mean danger point. Recorded as an explicit
+        own engine-derived brand targets. Recorded as an explicit
         x=None/y=None row rather than a tombstone, since hazard_marker has
         no per-row id to tombstone (see get_hazard_marker)."""
         return self._append(HAZARD_MARKER, {"x": None, "y": None, "note": None})

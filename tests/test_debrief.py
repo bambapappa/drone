@@ -68,6 +68,14 @@ class TestSections:
 
 
 class TestMatchedRows:
+    def test_hazard_category_is_presented_as_brand(self):
+        event = _event(category="HAZARD", person_id=None)
+        comparison = ComparisonResult(tolerance_s=60.0, both=[], ai_only=[event], operator_only=[])
+
+        html = render_debrief_html("run-1", comparison, generated_at="now")
+
+        assert "BRAND" in html
+
     def test_matched_row_includes_category_person_delta(self):
         ev = _event(category="MOT_FARA", person_id=3, t_start=100.0)
         note = _note(t=90.0, text="figurant sprang mot faran")

@@ -28,7 +28,7 @@ analyze:
 
 # Review UI (native, not Docker) — open http://localhost:8001
 review:
-	uvicorn review.main:app --host 0.0.0.0 --port 8001
+	if [ -x .venv/bin/python ]; then .venv/bin/python -m uvicorn review.main:app --host 0.0.0.0 --port 8001; else python -m uvicorn review.main:app --host 0.0.0.0 --port 8001; fi
 
 demo-video:
 	python scripts/make_demo_video.py

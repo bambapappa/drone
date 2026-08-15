@@ -192,7 +192,9 @@ async function loadRun(rid) {
   state.operatorNotes = opRes.notes || [];
 
   $("#main-empty").hidden = true;
+  $("#main-empty").classList.add("hidden");
   $("#main-review").hidden = false;
+  $("#main-review").classList.remove("hidden");
 
   // 2. Video element: native HTML5 playback. Range requests for seek are
   // handled by the server's FileResponse; nothing else to wire.

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#0c1014">
   <title>Drönare · Granskning</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=20260816-media">
 </head>
 <body>
   <header id="topbar">
@@ -29,7 +29,7 @@
     </div>
   </main>
 
-  <main id="main-review" hidden>
+  <main id="main-review" class="hidden" hidden>
     <div id="stage">
       <video id="video" playsinline controls></video>
       <canvas id="overlay"></canvas>
@@ -222,6 +222,6 @@
        playback. Same source file, same client-side-renderer principle. -->
   <video id="crop-video" muted preload="metadata" hidden></video>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=20260816-media"></script>
 </body>
 </html>

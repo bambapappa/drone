@@ -17,7 +17,7 @@ Inga filmer eller sidecars ingår i Git. Sätt `B32_VIDEO_DIR` till katalogen so
 
 ## Exakt replaykommando
 
-Kör från reporoten efter att `B32_VIDEO_DIR` har satts. `PYTHONDONTWRITEBYTECODE=1` gör replayen läsande. Kommandot stoppar om kodträdet avviker från kod-SHA, om en lokal kodfil är ocommittad, om video/sidecar/hash/proveniens/passstatus avviker, eller om nyhärledda HAZARD-event inte exakt matchar den persisterade P5-loggen.
+Kör från reporoten efter att `B32_VIDEO_DIR` har satts. `PYTHONDONTWRITEBYTECODE=1` gör replayen läsande. Kommandot stoppar om produktionsträdet `analysis/` avviker från kod-SHA, om en lokal produktionsfil är ocommittad, om video/sidecar/hash/proveniens/passstatus avviker, eller om nyhärledda HAZARD-event inte exakt matchar den persisterade P5-loggen. Tester ingår inte i replaymotorn och får därför formatteras utan att ogiltigförklara den låsta produktionskoden.
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python - <<'PY'
@@ -101,32 +101,40 @@ def sha256(path):
     return digest.hexdigest()
 
 
+def require(condition, message):
+    if not condition:
+        raise RuntimeError(message)
+
+
 subprocess.run(
-    ["git", "diff", "--quiet", CODE_SHA, "--", "analysis", "tests"],
+    ["git", "diff", "--quiet", CODE_SHA, "--", "analysis"],
     check=True,
 )
 status = subprocess.run(
-    ["git", "status", "--porcelain", "--", "analysis", "tests"],
+    ["git", "status", "--porcelain", "--", "analysis"],
     check=True,
     capture_output=True,
     text=True,
 ).stdout
-assert status == "", status
-print(json.dumps({"code_sha": CODE_SHA, "code_tree_matches": True}, sort_keys=True))
+require(status == "", f"analysis/ has uncommitted changes: {status}")
+print(json.dumps({"analysis_tree_matches": True, "code_sha": CODE_SHA}, sort_keys=True))
 
 for case in CASES:
     video = VIDEO_DIR / case["video_name"]
     run = case["run"]
-    assert sha256(video) == case["video_sha256"]
+    require(sha256(video) == case["video_sha256"], f"video hash mismatch: {video.name}")
     for relative, expected in case["artifact_sha256"].items():
-        assert sha256(run / relative) == expected, relative
+        require(sha256(run / relative) == expected, f"artifact hash mismatch: {relative}")
 
     manifest = json.loads((run / "manifest.json").read_text())
-    assert manifest["run_id"] == case["run_id"]
-    assert manifest["config_hash"] == CONFIG_HASH
-    assert manifest["code_version"] == CODE_VERSION
-    assert manifest["video_hash"] == case["manifest_video_hash"]
-    assert all(item["status"] == "complete" for item in manifest["passes"].values())
+    require(manifest["run_id"] == case["run_id"], "run_id mismatch")
+    require(manifest["config_hash"] == CONFIG_HASH, "config_hash mismatch")
+    require(manifest["code_version"] == CODE_VERSION, "code_version mismatch")
+    require(manifest["video_hash"] == case["manifest_video_hash"], "manifest video hash mismatch")
+    require(
+        all(item["status"] == "complete" for item in manifest["passes"].values()),
+        "incomplete pass",
+    )
 
     meta = manifest["passes"]["p1_detect"]["meta"]
     fps = float(meta["fps"])
@@ -204,7 +212,7 @@ for case in CASES:
                 active[kind][frame_no] = (hazard.pos, state.smoke_drift)
         frame_no += 1
     capture.release()
-    assert frame_no == expected_frames
+    require(frame_no == expected_frames, "decoded frame count mismatch")
 
     derived = [
         event.to_dict()
@@ -212,12 +220,12 @@ for case in CASES:
             timelines["fire"], timelines["smoke"], fps
         )
     ]
-    assert derived == persisted_hazards, (derived, persisted_hazards)
+    require(derived == persisted_hazards, "derived hazards differ from persisted P5 hazards")
     if case["name"] == "olycka":
-        assert frame_no == 3705
-        assert not any(row[1] for row in timelines["fire"])
-        assert not any(row[1] for row in timelines["smoke"])
-        assert derived == []
+        require(frame_no == 3705, "accident control did not replay all 3705 frames")
+        require(not any(row[1] for row in timelines["fire"]), "accident control has active fire")
+        require(not any(row[1] for row in timelines["smoke"]), "accident control has active smoke")
+        require(derived == [], "accident control derived hazards")
 
     print(
         json.dumps(
@@ -294,7 +302,7 @@ PY
 Detta är stdout från exakt kommandot ovan, omkört 2026-08-15 med `B32_VIDEO_DIR` satt till den lokala splitfilmskatalogen. Positioner är normaliserade bildkoordinater. `smoke_drift` följer motorns befintliga normaliserade Farneback-värde; den kända begränsningen att driftvägen använder owarpad föregående bildruta kvarstår.
 
 ```jsonl
-{"code_sha": "c82d07fba818e2e44e883540efcb9516361120b0", "code_tree_matches": true}
+{"analysis_tree_matches": true, "code_sha": "c82d07fba818e2e44e883540efcb9516361120b0"}
 {"active_fire_frames":1723,"active_smoke_frames":455,"artifact_sha256":{"events/p5_events.jsonl":"6dfcbf14088a93c57a7b3e039cc915b5c51280c3a860c78ebe96ea3a190a9e50","frames/p2_track.jsonl":"94317a17954be19786d2f02a814b533817e5c18dc0f0ea8f64b1a1f1739161a9","manifest.json":"26efe26832256f015cad31dc30a0e753e67291442aa40ca54b023235b435952e"},"case":"brand","code_version":"source-sha256:12df3be4d7dcbf91bc38376fb0c5f1a4001d74ee44cca7bc72ef2719d266715f","config_hash":"5a5a9c8cde6a14e7","derived_hazards":8,"frames_replayed":3706,"hazard_match_exact":true,"manifest_video_hash":"a04a5305f00c7e6ad364ebfec8691e8dffb209a6efe15d354b9b8d9f95de3e20","pass_statuses":{"p1_detect":"complete","p2_track":"complete","p3_identity":"complete","p5_events":"complete"},"persisted_events":23,"replay":{"ignore_regions":[],"lag":8},"run_id":"eb365b175b07","video":"drone-halva2-brand.mp4","video_sha256":"e107bf6338f06346c1154d833fc3439ba609941308e2585ae5e7712cea825212"}
 {"area_mean":0.01476,"area_peak":0.03062,"case":"brand","drift_first":[0.00038052,6.828e-05],"drift_last":[0.00047396,4.146e-05],"drift_mag_max":0.00115685,"drift_mean":[0.00042791,3.62e-06],"event_id":"hazard-000000","frames":[59,720],"kind":"fire","pos_first":[0.670069,0.74893],"pos_last":[0.693502,0.521869],"pos_max":[0.900273,0.925604],"pos_min":[0.180386,0.226426],"t":[2.36,28.84]}
 {"area_mean":0.00748,"area_peak":0.01014,"case":"brand","drift_first":[0.00024865,8.971e-05],"drift_last":[0.00026959,-8.618e-05],"drift_mag_max":0.00057362,"drift_mean":[0.00020727,-8.295e-05],"event_id":"hazard-000001","frames":[330,483],"kind":"smoke","pos_first":[0.776746,0.120261],"pos_last":[0.779398,0.074897],"pos_max":[0.799726,0.925879],"pos_min":[0.14523,0.028603],"t":[13.2,19.36]}

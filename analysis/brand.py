@@ -6,10 +6,12 @@ place update the same incident.  Incidents remain active through the end of
 the analyzed video because a temporary visual miss does not mean that the
 physical fire stopped.
 
-Scene segments are deliberately isolated.  Their local coordinate systems are
-unrelated after a visual loss, so automatically merging incidents across a
-segment boundary would invent identity.  A future review-layer operation can
-let an operator join such incidents explicitly.
+Recorded-film analysis repairs an ordinary adjacent-frame tracking dropout in
+the scene layer before incidents are derived.  A remaining segment boundary
+therefore means that visual continuity was not proved (for example a hard
+cut); its unrelated coordinates stay isolated instead of inventing identity.
+The GUI reviews the completed engine result and may correct it, but is not the
+primary association mechanism.
 """
 
 from __future__ import annotations

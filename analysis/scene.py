@@ -2,8 +2,10 @@
 
 The scene space is deliberately *local*, not geographic.  It gives every
 visually connected stretch of video a stable coordinate system whose first
-frame is the origin.  If optical-flow GMC cannot link two adjacent frames we
-start a new segment instead of accumulating a guessed transform.
+frame is the origin.  Sparse optical flow is the cheap primary link.  If it
+fails, a stricter SIFT + RANSAC fallback gets one chance to prove that the two
+adjacent frames still show the same scene; otherwise we start a new segment
+instead of accumulating a guessed transform.
 
 `SceneGMC` implements the small ``apply(frame, detections) -> 2x3`` interface
 that Ultralytics BoT-SORT expects.  This makes the transform used to compensate
@@ -54,6 +56,7 @@ class SceneFrame:
     frame_to_scene: np.ndarray
     confidence: float
     linked: bool
+    link_method: str
 
     def to_record(self, pts_ms: float | None = None) -> dict[str, Any]:
         rec: dict[str, Any] = {
@@ -63,6 +66,7 @@ class SceneFrame:
             "frame_to_scene": [[round(float(v), 8) for v in row] for row in self.frame_to_scene],
             "scene_confidence": round(float(self.confidence), 4),
             "scene_linked": self.linked,
+            "scene_link_method": self.link_method,
         }
         if pts_ms is not None:
             rec["pts_ms"] = round(float(pts_ms), 3)
@@ -82,6 +86,7 @@ class SceneMotionAccumulator:
         frame_no: int,
         pairwise: np.ndarray | None,
         confidence: float,
+        link_method: str = "sparse_flow",
     ) -> SceneFrame:
         if frame_no != self._last_frame + 1:
             raise ValueError("scene frames must be accumulated sequentially")
@@ -89,12 +94,14 @@ class SceneMotionAccumulator:
         linked = True
         if self._last_frame < 0:
             self._scene_to_frame = np.eye(3, dtype=np.float64)
+            link_method = "initial"
         elif pairwise is None:
             # B29: never bridge a visual loss by pretending identity motion.
             self._segment += 1
             self._scene_to_frame = np.eye(3, dtype=np.float64)
             linked = False
             confidence = 0.0
+            link_method = "unlinked"
         else:
             self._scene_to_frame = _matrix3(pairwise) @ self._scene_to_frame
             self._scene_to_frame = _matrix3(self._scene_to_frame)
@@ -112,6 +119,7 @@ class SceneMotionAccumulator:
             frame_to_scene=frame_to_scene,
             confidence=max(0.0, min(1.0, float(confidence))),
             linked=linked,
+            link_method=link_method,
         )
 
 
@@ -139,7 +147,9 @@ class SceneGMC:
     The returned affine warp maps previous-frame pixels to current-frame
     pixels.  Quality is based on RANSAC inlier share and median reprojection
     error.  A rejected estimate returns identity to the tracker and starts a
-    new scene segment for downstream consumers.
+    new scene segment for downstream consumers.  The stronger fallback is
+    only evaluated after sparse flow fails, so recorded-film analysis can
+    repair a feature-tracking dropout without weakening the hard-cut rule.
     """
 
     def __init__(self, downscale: float = 2.0, seed: int = 42) -> None:
@@ -165,6 +175,9 @@ class SceneGMC:
             "maxLevel": 3,
             "criteria": (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
         }
+        self._fallback_min_matches = 40
+        self._fallback_min_inliers = 80
+        self._fallback_min_inlier_ratio = 0.25
 
     def prepare(self, raw_frame: np.ndarray) -> np.ndarray:
         self._prepared_warp = self._advance(raw_frame)
@@ -193,13 +206,19 @@ class SceneGMC:
 
         if self._prev_points is None:
             # The preceding frame had no usable texture.  There is no
-            # correspondence from it to this frame, even if this frame has
-            # good corners again, so B29 requires a new local segment.
+            # sparse-flow correspondence from it to this frame, even if this
+            # frame has good corners again.  The strict feature fallback may
+            # still prove continuity; otherwise B29 requires a new segment.
+            warp, confidence = self._strong_feature_warp(self._prev_gray, gray)
             self._prev_gray = gray.copy()
             self._prev_points = points
-            identity = np.eye(2, 3, dtype=np.float64)
-            self.current = self.accumulator.advance(self._frame_no, None, confidence=0.0)
-            return identity
+            self.current = self.accumulator.advance(
+                self._frame_no,
+                warp,
+                confidence=confidence,
+                link_method="sift_ransac" if warp is not None else "unlinked",
+            )
+            return warp if warp is not None else np.eye(2, 3, dtype=np.float64)
 
         warp: np.ndarray | None = None
         confidence = 0.0
@@ -239,10 +258,81 @@ class SceneGMC:
             warp = None
             confidence = 0.0
 
+        link_method = "sparse_flow"
+        if warp is None:
+            warp, confidence = self._strong_feature_warp(self._prev_gray, gray)
+            link_method = "sift_ransac" if warp is not None else "unlinked"
+
         self._prev_gray = gray.copy()
         self._prev_points = points
-        self.current = self.accumulator.advance(self._frame_no, warp, confidence=confidence)
+        self.current = self.accumulator.advance(
+            self._frame_no, warp, confidence=confidence, link_method=link_method
+        )
         return warp if warp is not None else np.eye(2, 3, dtype=np.float64)
+
+    def _strong_feature_warp(
+        self, previous_gray: np.ndarray, current_gray: np.ndarray
+    ) -> tuple[np.ndarray | None, float]:
+        """Prove continuity after sparse flow fails, or return no link.
+
+        Lowe-filtered SIFT matches must clear both an absolute RANSAC-inlier
+        floor and an inlier-share floor.  This is intentionally much stricter
+        than accepting any estimable affine: a hard cut often has a handful
+        of accidental matches, but not a large geometrically consistent set.
+        """
+
+        try:
+            sift = cv2.SIFT_create(nfeatures=2500, contrastThreshold=0.02)
+            previous_points, previous_desc = sift.detectAndCompute(previous_gray, None)
+            current_points, current_desc = sift.detectAndCompute(current_gray, None)
+            if previous_desc is None or current_desc is None:
+                return None, 0.0
+
+            pairs = cv2.BFMatcher(cv2.NORM_L2).knnMatch(previous_desc, current_desc, k=2)
+            matches = [
+                first
+                for pair in pairs
+                if len(pair) == 2
+                for first, second in [pair]
+                if first.distance < 0.75 * second.distance
+            ]
+            if len(matches) < self._fallback_min_matches:
+                return None, 0.0
+
+            previous = np.float32([previous_points[item.queryIdx].pt for item in matches])
+            current = np.float32([current_points[item.trainIdx].pt for item in matches])
+            cv2.setRNGSeed(self.seed + self._frame_no)
+            estimated, inliers = cv2.estimateAffinePartial2D(
+                previous,
+                current,
+                method=cv2.RANSAC,
+                ransacReprojThreshold=3.0,
+                maxIters=3000,
+                confidence=0.995,
+                refineIters=10,
+            )
+            if estimated is None or inliers is None:
+                return None, 0.0
+
+            inlier_mask = inliers.reshape(-1).astype(bool)
+            count = int(inlier_mask.sum())
+            ratio = count / len(matches)
+            if (
+                count < self._fallback_min_inliers
+                or ratio < self._fallback_min_inlier_ratio
+                or not self._sane(estimated, current_gray.shape)
+            ):
+                return None, 0.0
+
+            predicted = previous @ estimated[:, :2].T + estimated[:, 2]
+            errors = np.linalg.norm(predicted - current, axis=1)
+            median_error = float(np.median(errors[inlier_mask]))
+            confidence = ratio * max(0.0, 1.0 - median_error / 6.0)
+            warp = estimated.astype(np.float64)
+            warp[:, 2] *= self.downscale
+            return warp, confidence
+        except cv2.error:
+            return None, 0.0
 
     def _sane(self, warp: np.ndarray, shape: tuple[int, ...]) -> bool:
         if warp.shape != (2, 3) or not np.isfinite(warp).all():

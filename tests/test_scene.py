@@ -14,6 +14,7 @@ def test_accumulates_camera_motion_and_round_trips_points():
     first = acc.advance(frame_no=0, pairwise=np.eye(2, 3), confidence=1.0)
     assert first.segment == 0
     assert first.linked
+    assert first.link_method == "initial"
 
     # Static scenery moves +12/-4 pixels on screen between the two frames.
     warp = np.array([[1.0, 0.0, 12.0], [0.0, 1.0, -4.0]])
@@ -21,6 +22,7 @@ def test_accumulates_camera_motion_and_round_trips_points():
     assert second.segment == 0
     assert second.linked
     assert second.confidence == 0.8
+    assert second.link_method == "sparse_flow"
 
     frame_xy = transform_point(second.scene_to_frame, (100.0, 50.0))
     assert frame_xy == (112.0, 46.0)
@@ -39,6 +41,7 @@ def test_failed_link_starts_new_segment_instead_of_guessing():
 
     assert lost.segment == 1
     assert not lost.linked
+    assert lost.link_method == "unlinked"
     assert np.allclose(lost.scene_to_frame, np.eye(3))
     assert np.allclose(lost.frame_to_scene, np.eye(3))
 
@@ -67,6 +70,7 @@ def test_scene_gmc_recovers_translation_from_real_image_flow():
     assert gmc.current.segment == 0
     assert gmc.current.linked
     assert gmc.current.confidence > 0.5
+    assert gmc.current.link_method == "sparse_flow"
     assert np.allclose(estimated[:, 2], [9.0, -5.0], atol=0.5)
     # A static scene point which moved on screen maps back to its first-frame
     # coordinate through the persisted inverse transform.
@@ -86,6 +90,7 @@ def test_scene_gmc_recovers_small_rotation():
     assert gmc.current is not None
     assert gmc.current.segment == 0
     assert gmc.current.confidence > 0.5
+    assert gmc.current.link_method == "sparse_flow"
     assert np.allclose(estimated, expected, atol=0.5)
 
 
@@ -101,6 +106,43 @@ def test_scene_gmc_starts_new_segment_after_textureless_frame():
     assert gmc.current.segment == 1
     assert not gmc.current.linked
     assert gmc.current.confidence == 0.0
+
+
+def test_scene_gmc_uses_strong_feature_fallback_after_flow_failure(monkeypatch):
+    rng = np.random.default_rng(31)
+    first = rng.integers(0, 256, size=(240, 320), dtype=np.uint8)
+    expected = cv2.getRotationMatrix2D((160.0, 120.0), 2.0, 1.0)
+    expected[:, 2] += [13.0, -7.0]
+    second = cv2.warpAffine(first, expected, (320, 240))
+    monkeypatch.setattr(cv2, "calcOpticalFlowPyrLK", lambda *args, **kwargs: (None, None, None))
+    gmc = SceneGMC(downscale=1.0, seed=31)
+
+    gmc.apply(first)
+    estimated = gmc.apply(second)
+
+    assert gmc.current is not None
+    assert gmc.current.segment == 0
+    assert gmc.current.linked
+    assert gmc.current.confidence > 0.5
+    assert gmc.current.link_method == "sift_ransac"
+    assert np.allclose(estimated, expected, atol=0.6)
+
+
+def test_scene_gmc_feature_fallback_does_not_bridge_unrelated_frames(monkeypatch):
+    first = np.random.default_rng(41).integers(0, 256, size=(240, 320), dtype=np.uint8)
+    second = np.random.default_rng(42).integers(0, 256, size=(240, 320), dtype=np.uint8)
+    monkeypatch.setattr(cv2, "calcOpticalFlowPyrLK", lambda *args, **kwargs: (None, None, None))
+    gmc = SceneGMC(downscale=1.0, seed=41)
+
+    gmc.apply(first)
+    estimated = gmc.apply(second)
+
+    assert gmc.current is not None
+    assert gmc.current.segment == 1
+    assert not gmc.current.linked
+    assert gmc.current.confidence == 0.0
+    assert gmc.current.link_method == "unlinked"
+    assert np.array_equal(estimated, np.eye(2, 3))
 
 
 def test_prepared_scene_warp_is_consumed_without_advancing_twice():

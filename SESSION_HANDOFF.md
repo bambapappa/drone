@@ -1,5 +1,14 @@
 # Session handoff
 
+## 2026-08-16 — granskningsvy: förprocesserad uppspelning och markörstatus
+
+- **Användarobservation:** videon är nu dominerande och synlig, men uppspelningen laggar; personboxar är glesa; BRAND/faromarkörer verkar ibland fel eller försvinner. Skärmbilderna visar samtidigt knappen `Rensa markör`, alltså att en Phase 4-manual faromarkör är aktiv.
+- **Förklaring:** manualmarkören är en avsiktlig retroaktiv override som påverkar omräknade `MOT_FARA`-händelser och därmed eventantalet. Den är inte samma sak som motorns BRAND-evidens. GUI:t etiketterar den nu uttryckligen `MANUELL FAROMARKÖR`; när scenprojektionen inte kan styrkas visas varning i stället för att låtsas ha en exakt position. BRAND utan giltig projektion visar `POSITION EJ KALIBRERAD`.
+- **Laggfix lokalt:** `review/routes.py` bygger ett processlokalt index över det färdiga P2-sidecarets tracklets en gång per run. `/tracklets` och `/tracklets/range` läser indexet och återanvänder den korrigerade tracklet→person-kartan; cache invalideras efter identity correction. `review/static/app.js` hämtar ett look-ahead-intervall och delar pågående intervallförfrågningar i stället för en HTTP-/JSONL-skanning per visad bildruta.
+- **Verifiering:** commit `f100e14` är lokalt skapad. `.venv/bin/pytest -q` = **501 passed**; `node --check review/static/app.js`, `git diff --check` och Python-kompilering gröna. Ändringarna är ännu lokala och inte pushade.
+- **Modellfakta:** den färska brandkörningen analyserades i 1280×720 med `imgsz=1280`; glesa persondetektioner är därför främst småobjekts/VisDrone-recall, inte att GUI:t skalar ned filmen. För högre recall bör en separat jämförande omkörning med `--tiles 2` mätas; den ska inte blandas ihop med uppspelningsfixen.
+- **Nästa test i webbläsaren:** stoppa gammal server, kör `ANALYSIS_OUTPUT_DIR=... VIDEO_DIR=... make review`, öppna run `bbb4d7db9b70`, gör hård omladdning, kontrollera att första range-requesten täcker ca 180 bildrutor och att Network inte visar en request per frame. Klicka `Rensa markör` för att jämföra rå AI-MOT_FARA med manual override.
+
 ## 2026-08-15 — B33 flera långlivade brandhärdar, implementation pågår
 
 - **Senaste UI-fix:** commit `ed9c252` gör videon dominant i granskningsvyn genom att storleksätta video och overlay-canvas aspektkorrekt mot hela scenen. BRAND-evidensens scenankare ritas som `BRAND · RÖK/ELD`; manuella faromarkörer är fortsatt separata. Boxar/ID/Beteende-lager använder P2-tracklets som tidigare. Efter uppdatering: starta om `make review` och gör en hård omladdning i webbläsaren.

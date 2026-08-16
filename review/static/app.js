@@ -69,6 +69,7 @@ const state = {
   frameStep: null,     // ms/frame, learned from the first loaded window
   boxesByFrame: null,  // lazy: Map<frame_no, box[]>
   trailCache: { from: null, to: null, frames: {} }, // sliding tracklet window
+  overlayWindowPromise: null,
   activeEventId: null,
   layers: { boxes: true, ids: true, status: true, trails: false, heatmap: false },
   _reviewPauseHandler: null, // current jumpToEvent auto-pause listener, if any
@@ -353,13 +354,18 @@ async function fetchBoxesForFrame(frameNo) {
     return state.boxesByFrame.get(frameNo);
   }
   try {
-    const r = await fetch(`/api/runs/${state.runId}/tracklets?frame=${frameNo}`).then((r) => r.json());
     if (!state.boxesByFrame) state.boxesByFrame = new Map();
-    // Tiny LRU: keep the last 64 frames' boxes to bound memory on long films.
-    if (state.boxesByFrame.size > 64) {
-      const firstKey = state.boxesByFrame.keys().next().value;
-      state.boxesByFrame.delete(firstKey);
+    // Fetch a look-ahead window once.  Playback is a replay of completed
+    // output, so there is no reason to make one HTTP request per displayed
+    // frame.  The range endpoint is also shared with trails.
+    const frames = await fetchTrailWindow(frameNo, 30);
+    for (const [key, rows] of Object.entries(frames)) {
+      const n = Number(key);
+      if (Number.isFinite(n)) state.boxesByFrame.set(n, rows || []);
     }
+    if (state.boxesByFrame.has(frameNo)) return state.boxesByFrame.get(frameNo);
+    // Fallback for an older server without the range endpoint.
+    const r = await fetch(`/api/runs/${state.runId}/tracklets?frame=${frameNo}`).then((r) => r.json());
     state.boxesByFrame.set(frameNo, r.boxes || []);
     return r.boxes || [];
   } catch (_) { return []; }
@@ -376,15 +382,20 @@ async function fetchTrailWindow(frameNo, span = 30) {
   if (cache.to != null && frameNo <= cache.to && needFrom >= cache.from) {
     return cache.frames;
   }
+  if (state.overlayWindowPromise) return state.overlayWindowPromise;
   const from = needFrom;
   const to = frameNo + TRAIL_WINDOW_LOOKAHEAD;
-  try {
-    const r = await fetch(
+  state.overlayWindowPromise = (async () => {
+    try {
+      const r = await fetch(
       `/api/runs/${state.runId}/tracklets/range?from=${from}&to=${to}`
-    ).then((r) => r.json());
-    state.trailCache = { from, to, frames: r.frames || {} };
-    return state.trailCache.frames;
-  } catch (_) { return {}; }
+      ).then((r) => r.json());
+      state.trailCache = { from, to, frames: r.frames || {} };
+      return state.trailCache.frames;
+    } catch (_) { return {}; }
+    finally { state.overlayWindowPromise = null; }
+  })();
+  return state.overlayWindowPromise;
 }
 
 let lastDrawnFrame = null;
@@ -612,7 +623,7 @@ function drawHazardMarker(W, H, frameRecord) {
   ctx.font = `bold ${Math.max(11, W / 70)}px system-ui, sans-serif`;
   ctx.textBaseline = "bottom";
   ctx.fillStyle = COLORS.toward_danger;
-  ctx.fillText(position.state === "offscreen" ? "FARA UTANFÖR BILD" : "FAROMARKÖR", x + r + 4, y + r);
+  ctx.fillText(position.state === "offscreen" ? "MANUELL FARA · UTANFÖR BILD" : "MANUELL FAROMARKÖR", x + r + 4, y + r);
 }
 
 function drawBrandTargets(W, H, frameRecord) {
@@ -620,7 +631,6 @@ function drawBrandTargets(W, H, frameRecord) {
   // faromarkör.  The event evidence stores the anchor in the local scene
   // coordinate system; project it into the current frame when the segment is
   // still valid.  Old sidecars without an anchor simply have no target here.
-  if (!frameRecord?.scene_to_frame) return;
   const frameNo = frameRecord.frame_no;
   const targets = state.events.filter((event) => {
     if (event.category !== "HAZARD") return false;
@@ -629,10 +639,17 @@ function drawBrandTargets(W, H, frameRecord) {
     if (evidence.scene_segment != null && evidence.scene_segment !== frameRecord.scene_segment) return false;
     return frameNo >= (evidence.frame_start ?? 0) && frameNo <= (evidence.frame_end ?? Number.MAX_SAFE_INTEGER);
   });
+  if (!targets.length) return;
+  if (!frameRecord?.scene_to_frame) {
+    drawSceneWarning("BRAND · POSITION EJ KALIBRERAD", W, H);
+    return;
+  }
+  let drawn = 0;
   for (const event of targets) {
     const evidence = event.evidence;
     const point = projectPoint(frameRecord.scene_to_frame, evidence.anchor[0], evidence.anchor[1]);
     if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) continue;
+    drawn += 1;
     const x = Math.max(12, Math.min(W - 12, point.x));
     const y = Math.max(12, Math.min(H - 12, point.y));
     const offscreen = x !== point.x || y !== point.y;
@@ -655,6 +672,7 @@ function drawBrandTargets(W, H, frameRecord) {
     ctx.fillText(offscreen ? "BRAND · UTANFÖR BILD" : "BRAND · RÖK/ELD", x + r + 7, y - 4);
     ctx.restore();
   }
+  if (!drawn) drawSceneWarning("BRAND · POSITION EJ KALIBRERAD", W, H);
 }
 
 // =====================================================================

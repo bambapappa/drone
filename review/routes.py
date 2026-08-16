@@ -84,6 +84,7 @@ import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response
@@ -115,6 +116,14 @@ router = APIRouter(prefix="/api")
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 # Event ids add a leading category prefix separated by '-' (e.g. "stilla-000001").
 _EVENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+
+# Playback is a read-only replay of the completed artifact.  Keep the P2
+# index in memory instead of rescanning the whole JSONL file for every video
+# frame (a 28k-row sidecar otherwise turns smooth playback into a disk-bound
+# request loop).  The cache is process-local and invalidated when a live
+# identity correction changes the person join.
+_OVERLAY_CACHE: dict[tuple[str, str], tuple[dict[int, list[dict[str, Any]]], dict[int, int]]] = {}
+_OVERLAY_CACHE_LOCK = Lock()
 
 
 def _validate_id(value: str, *, pattern: re.Pattern[str] = _ID_RE, label: str = "id") -> str:
@@ -216,6 +225,33 @@ def _person_by_tracklet(store: ArtifactStore, ann: AnnotationStore | None = None
         for tid in p.get("tracklet_ids", []):
             person_by_tracklet[int(tid)] = int(p["person_id"])
     return person_by_tracklet
+
+
+def _overlay_data(
+    settings: ReviewSettings, run_id: str, store: ArtifactStore
+) -> tuple[dict[int, list[dict[str, Any]]], dict[int, int]]:
+    """Return cached frame-indexed P2 rows and the corrected person join."""
+    key = (str(settings.output_dir.resolve()), run_id)
+    with _OVERLAY_CACHE_LOCK:
+        cached = _OVERLAY_CACHE.get(key)
+    if cached is not None:
+        return cached
+    rows_by_frame: dict[int, list[dict[str, Any]]] = {}
+    for row in store.iter_tracklets(OfflineOrchestrator.P2_PASS_NAME):
+        frame_no = int(row.get("frame_no", -1))
+        rows_by_frame.setdefault(frame_no, []).append(dict(row))
+    person_by_tracklet = _person_by_tracklet(store, _annotation_store(settings, run_id))
+    value = (rows_by_frame, person_by_tracklet)
+    with _OVERLAY_CACHE_LOCK:
+        # Another request may have populated it while this request scanned;
+        # retaining either equivalent index is safe and avoids churn.
+        return _OVERLAY_CACHE.setdefault(key, value)
+
+
+def _invalidate_overlay_cache(settings: ReviewSettings, run_id: str) -> None:
+    key = (str(settings.output_dir.resolve()), run_id)
+    with _OVERLAY_CACHE_LOCK:
+        _OVERLAY_CACHE.pop(key, None)
 
 
 def _remap_event_persons(events: list[dict[str, Any]], corrected_map: dict[int, int]) -> list[dict[str, Any]]:
@@ -490,18 +526,18 @@ async def get_tracklets(
 ) -> dict[str, Any]:
     """All tracklet boxes present at `frame`, for the overlay canvas.
 
-    Streams P2's tracklets file and filters in-memory — the file is one row
-    per (tracklet, frame), so the per-request cost is O(rows) which is fine
-    for the review use case (interactive, one frame at a time)."""
+    Reads the process-local frame index built from the completed P2 artifact.
+    The index is deliberately derived from immutable output; it only avoids
+    repeating the same JSONL scan while the reviewer plays the film."""
     store = _open_store(settings, run_id)
     p2 = OfflineOrchestrator.P2_PASS_NAME
     if store.manifest.get("passes", {}).get(p2, {}).get("status") != "complete":
         raise HTTPException(status_code=409, detail="P2 har inte körts för den här körningen")
-    rows = [r for r in store.iter_tracklets(p2) if int(r.get("frame_no", -1)) == frame]
+    rows_by_frame, person_by_tracklet = _overlay_data(settings, run_id, store)
+    rows = [dict(r) for r in rows_by_frame.get(frame, [])]
     # Join tracklet → person_id from P3 (if available), with any identity
     # corrections applied, so the overlay shows the same corrected person
     # labels as the rest of the UI.
-    person_by_tracklet = _person_by_tracklet(store, _annotation_store(settings, run_id))
     for r in rows:
         tid = int(r.get("tracklet_id", -1))
         r["person_id"] = person_by_tracklet.get(tid)
@@ -526,11 +562,17 @@ async def get_tracklets_range(
     p2 = OfflineOrchestrator.P2_PASS_NAME
     if store.manifest.get("passes", {}).get(p2, {}).get("status") != "complete":
         raise HTTPException(status_code=409, detail="P2 har inte körts")
+    rows_by_frame, person_by_tracklet = _overlay_data(settings, run_id, store)
     grouped: dict[int, list[dict[str, Any]]] = {}
-    for r in store.iter_tracklets(p2):
-        f = int(r.get("frame_no", -1))
-        if frame_from <= f <= frame_to:
-            grouped.setdefault(f, []).append(r)
+    for f in range(frame_from, frame_to + 1):
+        rows = rows_by_frame.get(f)
+        if not rows:
+            continue
+        grouped[f] = []
+        for row in rows:
+            copied = dict(row)
+            copied["person_id"] = person_by_tracklet.get(int(copied.get("tracklet_id", -1)))
+            grouped[f].append(copied)
     return {"frame_from": frame_from, "frame_to": frame_to, "frames": grouped}
 
 
@@ -1110,6 +1152,7 @@ async def add_identity_correction(
         video_hash=store.manifest.get("video_hash"),
         config_hash=store.manifest.get("config_hash"),
     )
+    _invalidate_overlay_cache(settings, run_id)
     return {"correction": row, "warning": warning}
 
 
@@ -1124,6 +1167,7 @@ async def delete_identity_correction(
     ok = _annotation_store(settings, run_id).delete_identity_correction(aid)
     if not ok:
         raise HTTPException(status_code=404, detail="korrigeringen finns inte")
+    _invalidate_overlay_cache(settings, run_id)
     return {"deleted": aid}
 
 

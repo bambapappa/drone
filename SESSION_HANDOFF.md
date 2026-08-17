@@ -14,6 +14,7 @@
 - **Nytt reproducerat fel:** maxpersoner-sidecaren `drone-halva2-brand_maxpersoner_analysis/75aecf771782` innehåller endast ett medelankare `[823.53, 517.805]` för `brand-000000`, trots 1 279 observationer. Det förklarar fel hus i början när kameran cirklar; första skärmbilden hade ingen aktiv manuell markör.
 - **Kodfix lokalt:** `BrandObservation` sparar nu även rå bildpixelposition; `BrandIncident`/P5-evidens sparar `position_samples`; granskningsvyn interpolerar dessa i bildkoordinater. Det gamla `anchor` behålls för association/audit och som fallback för äldre sidecars. En ny P1–P5-körning krävs för att få samples i artefakten.
 - **Personrecall:** körningen med `--imgsz 1536 --tiles 2 --detect-conf 0.05 --display-conf 0.15` gav synliga flerboxar men också fler falsklarm, vilket är den väntade recall/precision-kostnaden. Falsklarmen ska inte “lösas” genom att låtsas att rådetektionerna är bekräftade personer.
+- **Visningsfix:** GUI:t filtrerar nu overlay-boxar enligt körningens persisterade `display_conf`, medan lågkonfidensraderna finns kvar i sidecaren för audit. `detect-conf` styr recall; `display-conf` styr vad operatören ser.
 - **Verifiering av positionsfix:** brand/event-testerna 36 gröna; JS-syntax och ruff gröna. Full svit ska köras efter dokumentationsändringen. Ändringen är ännu inte pushad.
 
 ## 2026-08-15 — B33 flera långlivade brandhärdar, implementation pågår

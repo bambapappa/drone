@@ -432,7 +432,14 @@ async function drawOverlay() {
   // adjusted frame pixels). The overlay canvas is sized to video intrinsic
   // pixels, so we draw 1:1 — no normalization math here, unlike the
   // realtime PoC where the WS meta contract carried normalized [0..1] boxes.
-  const boxes = await fetchBoxesForFrame(frameNo);
+  const rawBoxes = await fetchBoxesForFrame(frameNo);
+  // Keep low-confidence candidates in the immutable artifact for audit, but
+  // don't paint every candidate during normal review. This is the distinction
+  // between detect-conf (recall) and display-conf (usable picture).
+  const displayConf = Number(state.runSummary?.passes?.p1_detect?.config?.display_conf ?? 0);
+  const boxes = displayConf > 0
+    ? rawBoxes.filter((box) => Number(box.conf ?? 0) >= displayConf)
+    : rawBoxes;
 
   // Active event highlight: if the current time is inside an event's
   // [t_start, t_end], underline the relevant person box (if any) in red.

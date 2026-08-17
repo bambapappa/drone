@@ -458,6 +458,7 @@ def derive_hazard_events(
                         pos=(hazard.pos[0] * frame_w, hazard.pos[1] * frame_h),
                         area=hazard.area,
                         scene_segment=None,
+                        frame_pos=(hazard.pos[0] * frame_w, hazard.pos[1] * frame_h),
                     )
                 )
         tracker.observe(observations)
@@ -492,6 +493,13 @@ def _brand_incidents_to_events(incidents: list[BrandIncident], fps: float) -> li
                     "signals": sorted(incident.signals),
                     "scene_segment": incident.scene_segment,
                     "anchor": [round(value, 3) for value in incident.anchor],
+                    # The scene anchor is for association/audit.  Replaying
+                    # it as one fixed screen point is wrong for a circling
+                    # camera, so retain the observed frame-pixel positions.
+                    "position_space": "frame_pixels",
+                    "position_samples": [
+                        [frame, round(x, 3), round(y, 3)] for frame, x, y in incident.position_samples
+                    ],
                     "frame_start": incident.frame_start,
                     "frame_end": incident.frame_end,
                     "last_observed_frame": incident.last_observed_frame,
@@ -734,6 +742,7 @@ def derive_events(
                     pos=pos,
                     area=hazard.area,
                     scene_segment=coordinate_segment,
+                    frame_pos=(hazard.pos[0] * frame_w, hazard.pos[1] * frame_h),
                 )
             )
         brand_tracker.observe(observations)

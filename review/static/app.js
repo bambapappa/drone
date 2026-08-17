@@ -647,7 +647,30 @@ function drawBrandTargets(W, H, frameRecord) {
   let drawn = 0;
   for (const event of targets) {
     const evidence = event.evidence;
-    const point = projectPoint(frameRecord.scene_to_frame, evidence.anchor[0], evidence.anchor[1]);
+    let point;
+    const samples = Array.isArray(evidence.position_samples)
+      ? evidence.position_samples
+          .filter((sample) => Array.isArray(sample) && sample.length >= 3)
+          .sort((a, b) => a[0] - b[0])
+      : [];
+    if (evidence.position_space === "frame_pixels" && samples.length) {
+      // Interpolate between detector observations in screen coordinates. A
+      // moving camera must not use the incident's mean scene anchor.
+      let left = samples[0], right = samples[samples.length - 1];
+      for (let i = 1; i < samples.length; i++) {
+        if (samples[i][0] >= frameNo) { right = samples[i]; left = samples[i - 1]; break; }
+      }
+      const span = right[0] - left[0];
+      const ratio = span > 0 ? Math.max(0, Math.min(1, (frameNo - left[0]) / span)) : 0;
+      const sourceW = video.videoWidth || W;
+      const sourceH = video.videoHeight || H;
+      point = {
+        x: (left[1] + (right[1] - left[1]) * ratio) * W / sourceW,
+        y: (left[2] + (right[2] - left[2]) * ratio) * H / sourceH,
+      };
+    } else {
+      point = projectPoint(frameRecord.scene_to_frame, evidence.anchor[0], evidence.anchor[1]);
+    }
     if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) continue;
     drawn += 1;
     const x = Math.max(12, Math.min(W - 12, point.x));

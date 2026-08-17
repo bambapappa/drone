@@ -9,6 +9,13 @@
 - **Modellfakta:** den färska brandkörningen analyserades i 1280×720 med `imgsz=1280`; glesa persondetektioner är därför främst småobjekts/VisDrone-recall, inte att GUI:t skalar ned filmen. För högre recall bör en separat jämförande omkörning med `--tiles 2` mätas; den ska inte blandas ihop med uppspelningsfixen.
 - **Nästa test i webbläsaren:** stoppa gammal server, kör `ANALYSIS_OUTPUT_DIR=... VIDEO_DIR=... make review`, öppna run `bbb4d7db9b70`, gör hård omladdning, kontrollera att första range-requesten täcker ca 180 bildrutor och att Network inte visar en request per frame. Klicka `Rensa markör` för att jämföra rå AI-MOT_FARA med manual override.
 
+## 2026-08-17 — BRAND-position och högrecall-körning
+
+- **Nytt reproducerat fel:** maxpersoner-sidecaren `drone-halva2-brand_maxpersoner_analysis/75aecf771782` innehåller endast ett medelankare `[823.53, 517.805]` för `brand-000000`, trots 1 279 observationer. Det förklarar fel hus i början när kameran cirklar; första skärmbilden hade ingen aktiv manuell markör.
+- **Kodfix lokalt:** `BrandObservation` sparar nu även rå bildpixelposition; `BrandIncident`/P5-evidens sparar `position_samples`; granskningsvyn interpolerar dessa i bildkoordinater. Det gamla `anchor` behålls för association/audit och som fallback för äldre sidecars. En ny P1–P5-körning krävs för att få samples i artefakten.
+- **Personrecall:** körningen med `--imgsz 1536 --tiles 2 --detect-conf 0.05 --display-conf 0.15` gav synliga flerboxar men också fler falsklarm, vilket är den väntade recall/precision-kostnaden. Falsklarmen ska inte “lösas” genom att låtsas att rådetektionerna är bekräftade personer.
+- **Verifiering av positionsfix:** brand/event-testerna 36 gröna; JS-syntax och ruff gröna. Full svit ska köras efter dokumentationsändringen. Ändringen är ännu inte pushad.
+
 ## 2026-08-15 — B33 flera långlivade brandhärdar, implementation pågår
 
 - **Senaste UI-fix:** commit `ed9c252` gör videon dominant i granskningsvyn genom att storleksätta video och overlay-canvas aspektkorrekt mot hela scenen. BRAND-evidensens scenankare ritas som `BRAND · RÖK/ELD`; manuella faromarkörer är fortsatt separata. Boxar/ID/Beteende-lager använder P2-tracklets som tidigare. Efter uppdatering: starta om `make review` och gör en hård omladdning i webbläsaren.

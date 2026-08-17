@@ -29,6 +29,10 @@ class BrandObservation:
     pos: tuple[float, float]
     area: float
     scene_segment: int | None
+    # Raw frame-pixel position retained for replay rendering.  `pos` is the
+    # scene coordinate used for association; it is not a stable screen point
+    # while the drone moves.
+    frame_pos: tuple[float, float] | None = None
 
     def __post_init__(self) -> None:
         if self.signal not in {"fire", "smoke"}:
@@ -52,6 +56,7 @@ class BrandIncident:
     area_peak: float
     t_start: float
     t_end: float
+    position_samples: tuple[tuple[int, float, float], ...]
 
 
 @dataclass
@@ -65,6 +70,7 @@ class _MutableIncident:
     areas: list[float] = field(default_factory=list)
     observation_count: int = 0
     observed_frames: set[int] = field(default_factory=set)
+    position_samples: list[tuple[int, float, float]] = field(default_factory=list)
 
     def update(self, observation: BrandObservation) -> None:
         count = self.observation_count
@@ -77,6 +83,8 @@ class _MutableIncident:
         self.areas.append(observation.area)
         self.observation_count += 1
         self.observed_frames.add(observation.frame_no)
+        point = observation.frame_pos or observation.pos
+        self.position_samples.append((observation.frame_no, point[0], point[1]))
 
 
 class BrandIncidentTracker:
@@ -180,6 +188,7 @@ class BrandIncidentTracker:
                     area_peak=max(incident.areas),
                     t_start=incident.frame_start / fps,
                     t_end=(end_frame + 1) / fps,
+                    position_samples=tuple(incident.position_samples),
                 )
             )
         return result

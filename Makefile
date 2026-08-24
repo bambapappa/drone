@@ -1,4 +1,4 @@
-.PHONY: venv install dev test lint build up down deploy demo-video check serve analyze review
+.PHONY: venv install dev test lint build up down deploy demo-video check serve analyze review start
 
 # Skapa en isolerad virtuell miljö (rekommenderas på Mac/Linux).
 # Aktivera den sedan med:  source .venv/bin/activate
@@ -29,6 +29,9 @@ analyze:
 # Review UI (native, not Docker) — open http://localhost:8001
 review:
 	if [ -x .venv/bin/python ]; then .venv/bin/python -m uvicorn review.main:app --host 0.0.0.0 --port 8001; else python -m uvicorn review.main:app --host 0.0.0.0 --port 8001; fi
+
+start:
+	bash scripts/start_workstation.sh
 
 demo-video:
 	python scripts/make_demo_video.py

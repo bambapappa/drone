@@ -1,5 +1,11 @@
 # Session handoff
 
+## 2026-08-24 — enkel arbetsstationsstart
+
+- **Ny launcher:** `scripts/start_workstation.sh` kör hela native-flödet: skapar `.venv` vid behov, installerar projektet, hämtar/verifierar VisDrone-m, hittar standardfilen `videos/drone-halva2-brand.mp4` eller första videon i `videos/`, kör P1–P5 med `imgsz=1536`, `tiles=2`, `detect-conf=0.05`, `display-conf=0.30`, återanvänder färdig körning om provenance matchar och startar sedan review på port 8001.
+- **Dubbelklick:** `START_DRONE.command` finns i repo-roten för macOS. Lägg filmen i `videos/`, dubbelklicka filen och öppna `http://localhost:8001`; terminalfönstret måste lämnas öppet medan servern används. `--fresh` kan skickas via terminal om en ny körning uttryckligen krävs.
+- **Verifiering:** shellsyntax, diff-check och 69 riktade tester gröna. Ändringen är ännu lokal tills branchen pushas.
+
 ## 2026-08-16 — granskningsvy: förprocesserad uppspelning och markörstatus
 
 - **Användarobservation:** videon är nu dominerande och synlig, men uppspelningen laggar; personboxar är glesa; BRAND/faromarkörer verkar ibland fel eller försvinner. Skärmbilderna visar samtidigt knappen `Rensa markör`, alltså att en Phase 4-manual faromarkör är aktiv.

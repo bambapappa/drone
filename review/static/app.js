@@ -81,6 +81,7 @@ const state = {
   persons: [],             // corrected projection from GET /persons
   personsCount: null,
   personsUniqueCount: 0,   // served unique_count (confirmed + manual, no transients)
+  personsTransientCount: 0, // short sightings (< 2s, B16) excluded from unique_count
   personsEngineUncertainty: null, // immutable P3 band + run/pass provenance
   selectedPersonId: null,
   corrections: [],         // live identity-correction ops
@@ -1565,6 +1566,7 @@ async function refreshPersons() {
         state.persons = pj.persons || [];
         state.personsCount = pj.count ?? state.persons.length;
         state.personsUniqueCount = pj.unique_count ?? 0;
+        state.personsTransientCount = pj.transient_count ?? 0;
         state.personsEngineUncertainty = pj.engine_uncertainty || null;
       }
       if (cr.ok) {
@@ -2119,7 +2121,14 @@ function updateStats() {
   const uncertaintyEl = personStat.querySelector(".engine-uncertainty");
   const uncertainMerges = uncertainty?.uncertain_merges ?? 0;
   totalCountEl.classList.toggle("hidden", state.personsCount === null);
-  totalCountEl.textContent = state.personsCount === null ? "" : `totalt: ${state.personsCount}`;
+  // Surface transients on the same stat so a bare unique_count of 0 can never
+  // read as "nobody seen" when short sightings exist.
+  totalCountEl.textContent =
+    state.personsCount === null
+      ? ""
+      : state.personsTransientCount > 0
+        ? `totalt: ${state.personsCount} (${state.personsTransientCount} korta)`
+        : `totalt: ${state.personsCount}`;
   uncertaintyEl.classList.toggle("hidden", !uncertainty);
   uncertaintyEl.textContent = uncertainty
     ? `motorn: ${uncertainMerges} osäkra sammanslagningar`

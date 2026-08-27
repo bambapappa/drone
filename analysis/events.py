@@ -37,7 +37,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from analysis.behavior import STATUS_STILL, STATUS_TOWARD, BehaviorAnalyzer, BehaviorConfig
 from analysis.irrational import CATEGORY_IRRATIONELL, IrrationalConfig, derive_irrational_events
@@ -52,6 +52,8 @@ CATEGORY_MOT_FARA = "MOT_FARA"
 CATEGORY_HAZARD = "HAZARD"
 
 ALL_CATEGORIES = (CATEGORY_STILLA, CATEGORY_MOT_FARA, CATEGORY_IRRATIONELL, CATEGORY_HAZARD)
+
+DangerResolver = Callable[[int, int | None], "tuple[float, float] | None"]
 
 
 def _event_id(category: str, seq: int) -> str:
@@ -150,8 +152,7 @@ def derive_behavior_events(
     frame_w: int,
     frame_h: int,
     config: OfflineConfig,
-    danger_px: tuple[float, float] | None = None,
-    danger_scene_by_segment: dict[int, tuple[float, float]] | None = None,
+    danger_for_frame: DangerResolver | None = None,
 ) -> list[Event]:
     """Replay BehaviorAnalyzer over a tracklet table and diff into events.
 
@@ -167,12 +168,12 @@ def derive_behavior_events(
     applicable (HAZARD is null by construction; person-keyed categories are
     null only when P3 was skipped).
 
-    `danger_px` is the danger point in pixel coordinates (frame-space),
-    optional. When None, MOT_FARA cannot fire (the analyzer's
-    toward_danger check requires a danger point to compute the direction
-    cosine against). In the offline P5 pass, this is fed per-frame from the
-    SituationAnalyzer's detected fire/smoke position; retroactive operator-
-    marked queries are Phase 4.
+    `danger_for_frame(frame_no, segment) -> (x, y) | None` is the danger point
+    in the analyzer's coordinate space, looked up per frame. When None (or
+    when it returns None for a frame), MOT_FARA cannot fire that frame —
+    STILLA can. The engine supplies the per-frame fire/smoke position
+    (scene-transformed per its own frame); the review layer supplies a
+    constant resolver for an operator-placed marker.
     """
     if fps <= 0:
         return []
@@ -217,9 +218,7 @@ def derive_behavior_events(
             # motion normalization and may include camera scale/rotation.
             aspect = max((x1 - x0) / raw_box_h, 0.0)
             t = frame_no / fps
-            danger = danger_px
-            if danger_scene_by_segment is not None and segment is not None:
-                danger = danger_scene_by_segment.get(segment)
+            danger = danger_for_frame(frame_no, segment) if danger_for_frame is not None else None
             status, prone, speed = analyzer.update(
                 pid=tid, t=t, stab_pos=stab_pos, box_h=box_h, aspect=aspect, danger_stab=danger
             )
@@ -343,6 +342,44 @@ def _mean(xs: list[float]) -> float:
 
 def _majority(xs: list[bool]) -> bool:
     return sum(1 for x in xs if x) > len(xs) / 2 if xs else False
+
+
+def build_danger_resolver(
+    danger_px_by_frame: dict[int, tuple[float, float] | None],
+    scene_frames: dict[int, dict[str, Any]] | None,
+) -> DangerResolver | None:
+    """Build a per-frame danger resolver in the BehaviorAnalyzer's space.
+
+    For each frame with a detected danger point: if that frame has its own
+    `frame_to_scene` matrix (B29), transform the pixel danger into scene
+    coordinates with THAT frame's matrix (the scene the analyzer stabilizes
+    against); otherwise keep it in pixel coordinates. Frames without danger
+    resolve to None — MOT_FARA cannot fire there.
+
+    Returns None when no frame ever had a danger point, so the caller can omit
+    MOT_FARA entirely. This replaces the old mean-danger collapse, which
+    averaged every fire/smoke position into one constant — a fabricated point
+    measured on no frame that landed in empty space when fire moved (a breach
+    of B29's own anti-fabrication principle). Pure and deterministic.
+    """
+    resolved: dict[int, tuple[float, float]] = {}
+    for frame_no, px in danger_px_by_frame.items():
+        if px is None:
+            continue
+        scene_rec = (scene_frames or {}).get(frame_no)
+        if scene_rec is not None and scene_rec.get("frame_to_scene") is not None:
+            from analysis.scene import transform_point
+
+            resolved[frame_no] = transform_point(scene_rec["frame_to_scene"], px)
+        else:
+            resolved[frame_no] = px
+    if not resolved:
+        return None
+
+    def resolver(frame_no: int, segment: int | None) -> tuple[float, float] | None:
+        return resolved.get(frame_no)
+
+    return resolver
 
 
 def derive_hazard_events(
@@ -552,7 +589,6 @@ def derive_events(
     fire_timeline: list[tuple[int, bool, float]] = []
     smoke_timeline: list[tuple[int, bool, float]] = []
     danger_px_by_frame: dict[int, tuple[float, float] | None] = {}
-    danger_scene_points: dict[int, list[tuple[float, float]]] = defaultdict(list)
 
     frame_no = 0
     for frame in frames:
@@ -571,42 +607,20 @@ def derive_events(
             else:
                 danger_px_by_frame[frame_no] = None
         smoke_timeline.append((frame_no, state.smoke is not None, state.smoke.area if state.smoke else 0.0))
-        danger_here = danger_px_by_frame[frame_no]
-        scene_rec = (scene_frames or {}).get(frame_no)
-        if danger_here is not None and scene_rec and scene_rec.get("frame_to_scene") is not None:
-            from analysis.scene import transform_point
-
-            segment = int(scene_rec["scene_segment"])
-            danger_scene_points[segment].append(transform_point(scene_rec["frame_to_scene"], danger_here))
         frame_no += 1
 
-    # Behavior events: one derivation per contiguous run of same-danger-state
-    # would be wasteful; instead, since the danger point only affects MOT_FARA
-    # (STILLA is danger-independent), we run behavior with a *constant* danger
-    # point equal to the time-weighted mean of all non-None danger points.
-    # This is an approximation that captures the dominant case (one sustained
-    # hazard during a film) and degrades gracefully to None when no hazard
-    # ever fires. Phase 4 adds a separate reviewer-driven override on top of
-    # this — the review layer can recompute MOT_FARA against a manually
-    # placed/moved hazard marker (review/hazard.py), merged in at read time
-    # exactly like Phase 3's verdicts overlay; it never rewrites this engine
-    # output.
-    present_dangers = [p for p in danger_px_by_frame.values() if p is not None]
-    mean_danger: tuple[float, float] | None = None
-    if present_dangers:
-        mean_danger = (
-            sum(p[0] for p in present_dangers) / len(present_dangers),
-            sum(p[1] for p in present_dangers) / len(present_dangers),
-        )
-
-    danger_scene_by_segment = {
-        segment: (
-            sum(point[0] for point in points) / len(points),
-            sum(point[1] for point in points) / len(points),
-        )
-        for segment, points in danger_scene_points.items()
-        if points
-    }
+    # Behavior events: MOT_FARA resolves the danger point per frame from the
+    # situation analyzer's fire/smoke detection — scene-transformed per its
+    # own frame_to_scene when B29 scene data exists, else in pixel space. This
+    # is NOT a mean: a relocating fire is tracked at its actual position each
+    # frame instead of collapsed to a fabricated midpoint that was measured on
+    # no frame (the old behavior breached B29's own anti-fabrication rule).
+    # When no frame ever had a danger point, the resolver is None and MOT_FARA
+    # cannot fire (STILLA, danger-independent, still can). The review layer's
+    # reviewer-driven hazard marker (review/hazard.py) is a separate constant
+    # resolver merged in at read time exactly like Phase 3's verdicts overlay;
+    # it never rewrites this engine output.
+    danger_for_frame = build_danger_resolver(danger_px_by_frame, scene_frames)
 
     behavior_events = derive_behavior_events(
         tracklet_rows,
@@ -615,8 +629,7 @@ def derive_events(
         frame_w=frame_w,
         frame_h=frame_h,
         config=config,
-        danger_px=None if danger_scene_by_segment else mean_danger,
-        danger_scene_by_segment=danger_scene_by_segment or None,
+        danger_for_frame=danger_for_frame,
     )
 
     # IRRATIONELL (Phase 4, report §4): the same tracklet trajectories, run

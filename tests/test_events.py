@@ -23,9 +23,11 @@ from analysis.events import (
     CATEGORY_MOT_FARA,
     CATEGORY_STILLA,
     Event,
+    build_danger_resolver,
     derive_behavior_events,
     derive_hazard_events,
 )
+from analysis.scene import transform_point
 
 
 def _trk(
@@ -143,7 +145,7 @@ class TestBehaviorEventDiff:
             frame_w=1280,
             frame_h=720,
             config=_beh_config(),
-            danger_px=danger_px,
+            danger_for_frame=lambda fn, s: danger_px,
         )
         mot = [e for e in events if e.category == CATEGORY_MOT_FARA]
         assert len(mot) >= 1
@@ -161,9 +163,48 @@ class TestBehaviorEventDiff:
             frame_w=1280,
             frame_h=720,
             config=_beh_config(),
-            danger_px=None,
+            danger_for_frame=None,
         )
         assert len([e for e in events if e.category == CATEGORY_MOT_FARA]) == 0
+
+    def test_moving_danger_tracked_per_frame_not_averaged(self):
+        # Fire relocates from far-right to far-left mid-film. Person walks +x
+        # throughout. Per-frame: while danger is to the right (frames 0..59) the
+        # person moves toward it -> MOT_FARA fires; once danger flips left
+        # (frames 60..119) the person moves away -> no MOT_FARA in that span.
+        # The MEAN danger x = 0 sits behind the person (who starts at x=50) for
+        # the whole film, so a constant-mean resolver would fire ZERO events.
+        fps = 10.0
+        frames = list(range(120))
+        xyxy_seq = [(50.0 + i * 4.0, 100.0, 80.0 + i * 4.0, 180.0) for i in range(120)]
+        rows = _trk(1, frames, xyxy_seq, fps=fps)
+
+        def danger_for_frame(frame_no, segment):
+            return (1000.0, 140.0) if frame_no < 60 else (-1000.0, 140.0)
+
+        events = derive_behavior_events(
+            rows,
+            person_by_tracklet={},
+            fps=fps,
+            frame_w=1280,
+            frame_h=720,
+            config=_beh_config(),
+            danger_for_frame=danger_for_frame,
+        )
+        mot = [e for e in events if e.category == CATEGORY_MOT_FARA]
+        assert len(mot) >= 1  # per-frame tracks the right-side danger
+
+        # Proof the mean would have missed it: constant resolver at the mean (0,140).
+        mean_events = derive_behavior_events(
+            rows,
+            person_by_tracklet={},
+            fps=fps,
+            frame_w=1280,
+            frame_h=720,
+            config=_beh_config(),
+            danger_for_frame=lambda fn, s: (0.0, 140.0),
+        )
+        assert len([e for e in mean_events if e.category == CATEGORY_MOT_FARA]) == 0
 
     def test_scene_segment_break_resets_stillness_history(self):
         # Ten seconds stationary would normally fire STILLA. Split into
@@ -332,3 +373,39 @@ def _solid_frame(b: int, g: int, r: int, w: int = 320, h: int = 240) -> np.ndarr
     frame = np.zeros((h, w, 3), dtype=np.uint8)
     frame[:] = (b, g, r)
     return frame
+
+
+class TestBuildDangerResolver:
+    """build_danger_resolver: per-frame danger in the analyzer's space.
+
+    The whole point of the #1 fix: the resolver returns each frame's own
+    danger point (scene-transformed per its own frame_to_scene when scene
+    data exists, else raw pixel) — never a mean collapsed across the film.
+    """
+
+    def test_raw_pixel_per_frame_when_no_scene_data(self):
+        danger_px_by_frame = {0: (100.0, 200.0), 1: (300.0, 400.0)}
+        resolver = build_danger_resolver(danger_px_by_frame, scene_frames=None)
+        assert resolver is not None
+        assert resolver(0, None) == (100.0, 200.0)
+        assert resolver(1, None) == (300.0, 400.0)
+        assert resolver(2, None) is None  # frame without danger
+
+    def test_scene_transform_uses_each_frames_own_matrix(self):
+        # Same pixel danger in two frames, different per-frame transforms ->
+        # different scene points (NOT a segment mean).
+        m0 = np.array([[1.0, 0.0, 10.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+        m1 = np.array([[1.0, 0.0, 50.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+        scene_frames = {
+            0: {"frame_to_scene": m0, "scene_segment": 0},
+            1: {"frame_to_scene": m1, "scene_segment": 0},
+        }
+        danger_px_by_frame = {0: (100.0, 100.0), 1: (100.0, 100.0)}
+        resolver = build_danger_resolver(danger_px_by_frame, scene_frames)
+        assert resolver(0, 0) == transform_point(m0, (100.0, 100.0))
+        assert resolver(1, 0) == transform_point(m1, (100.0, 100.0))
+        assert resolver(0, 0) != resolver(1, 0)
+
+    def test_none_when_no_danger_ever(self):
+        assert build_danger_resolver({}, scene_frames=None) is None
+        assert build_danger_resolver({0: None, 1: None}, scene_frames=None) is None

@@ -1,5 +1,9 @@
 # Session handoff — scenkoordinatlager
 
+## Pågår just nu
+
+- ~~[Claude 2026-08-13] Fix #1 (MOT_FARA per-bildruta-fara — ta bort fabricerad medel-farpunkt; `derive_behavior_events` → `DangerResolver`) + #2 (transient-ärlighet i unik-räkning, endast presentation). Gren `fix/mot-fara-per-frame-and-transient-honesty`. Plan: `handoff/projekt/drone/PLAN-2026-08-13-mot-fara-per-bildruta-och-transient-arlighet.md`.~~ → klart, PR öppnas mot main (merge = mänskligt beslut).
+
 ## Mål
 
 Bygg ett gemensamt lokalt scenkoordinatlager så att faromarkör, `MOT FARA`,

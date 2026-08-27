@@ -384,6 +384,20 @@ async def test_persons_unique_count_excludes_transients(settings, client):
     assert body["engine_uncertainty"] == engine_uncertainty
 
 
+async def test_persons_response_has_transient_count(settings, client):
+    """transient_count is explicit and satisfies count == unique + transient.
+
+    Surfaced so a consumer never reads a bare unique_count of 0 as "nobody
+    seen" when short sightings exist (the rescue-search case).
+    """
+    rid = seed_counts_run(settings)
+    body = (await client.get(f"/api/runs/{rid}/persons")).json()
+    assert "transient_count" in body
+    assert body["transient_count"] == body["count"] - body["unique_count"]
+    # seed_counts_run: persons 1-3 confirmed, person 4 transient.
+    assert body["transient_count"] == 1
+
+
 async def test_persons_engine_uncertainty_defaults_for_legacy_sidecar(settings, run_id, client):
     body = (await client.get(f"/api/runs/{run_id}/persons")).json()
     assert body["engine_uncertainty"] == {
